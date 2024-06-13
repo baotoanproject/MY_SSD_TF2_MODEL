@@ -28,11 +28,14 @@ FLAGS = flags.FLAGS
 
 # TO-DO replace this with label map
 def class_text_to_int(row_label):
-    VOC_LABELS = {
-        'none': (0, 'Background'),
-        'phaodai': (1, 'phaodai'),
-        'phaomut': (2, 'phaomut')}
-    return VOC_LABELS[row_label][0]
+    if row_label == 'phaonoi':
+        return 1
+    elif row_label == 'phaotreo':
+        return 2
+    elif row_label == 'conca':
+        return 3
+    else:
+        return None
     # if row_label == 'mobile':
     #     return 1
     # else:
