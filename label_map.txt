@@ -1,2 +1,3 @@
-item { id:1,name:'phaodai'}
-item { id:2,name:'phaomut'}
+item { id:1,name:'phaonoi'}
+item { id:2,name:'phaotreo'}
+item { id:3,name:'conca'}
