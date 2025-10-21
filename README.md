@@ -1,2 +1,4 @@
-orangepi@orangepizero3:~$ grep -r "bluetoothd" /home/orangepi 2>/dev/null
-/home/orangepi/new-ble-gatt.py:    # Yêu cầu: sudo, bluez + bluetoothd đang chạy (có thể cần -E cho LE peripheral)
+orangepi@orangepizero3:~$ systemctl --user list-units | grep -i blue
+  sys-subsystem-bluetooth-devices-hci0.device                                                 loaded active plugged   /sys/subsystem/bluetooth/devices/hci0
+  sys-subsystem-bluetooth-devices-hci0:16.device                                              loaded active plugged   /sys/subsystem/bluetooth/devices/hci0:16
+  bluetooth.target                                                                            loaded active active    Bluetooth
