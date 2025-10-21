@@ -1,4 +1,10 @@
-orangepi@orangepizero3:~$ systemctl --user list-units | grep -i blue
-  sys-subsystem-bluetooth-devices-hci0.device                                                 loaded active plugged   /sys/subsystem/bluetooth/devices/hci0
-  sys-subsystem-bluetooth-devices-hci0:16.device                                              loaded active plugged   /sys/subsystem/bluetooth/devices/hci0:16
-  bluetooth.target                                                                            loaded active active    Bluetooth
+[Unit]
+Description=BLE Gatt Service
+After=bluetooth.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/orangepi/new-ble-gatt.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
