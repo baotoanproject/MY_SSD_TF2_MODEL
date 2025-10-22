@@ -6,7 +6,7 @@ Version=1.0
 Type=Application
 Name=Chromium Kiosk
 Comment=Start Chromium in kiosk mode
-Exec=bash -c "sleep 5 && /usr/bin/chromium --noerrdialogs --disable-infobars --kiosk http://localhost:8080 --incognito --start-fullscreen --user-data-dir=/tmp/chromium --disk-cache-dir=/dev/null"
+Exec=bash -c "sleep 5 && /usr/bin/chromium --noerrdialogs --disable-infobars --kiosk https://wb.wayfindy.com/welcome --incognito --start-fullscreen --user-data-dir=/tmp/chromium --disk-cache-dir=/dev/null"
 X-GNOME-Autostart-enabled=true
 OnlyShowIn=XFCE;
 EOF
