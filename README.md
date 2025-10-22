@@ -1,10 +1,15 @@
 [Unit]
-Description=BLE Gatt Service
-After=bluetooth.target
+Description=Disable Bluetooth Pairable
+After=bluetooth.service
+Requires=bluetooth.service
 
 [Service]
-ExecStart=/usr/bin/python3 /home/orangepi/new-ble-gatt.py
-Restart=on-failure
+Type=oneshot
+ExecStart=/usr/local/bin/bt-no-pair.sh
 
 [Install]
 WantedBy=multi-user.target
+
+#!/bin/bash
+sleep 5
+echo -e 'pairable off\ndiscoverable off\nquit' | bluetoothctl
