@@ -3,3 +3,38 @@ Type=Application
 Name=Chromium Kiosk
 Exec=chromium --noerrdialogs --disable-infobars --kiosk http://localhost:8080
 X-GNOME-Autostart-enabled=true
+
+
+#!/bin/bash
+# start-chromium-kiosk.sh
+
+# Ẩn chuột nếu muốn (uncomment dòng dưới)
+# unclutter &
+
+# Tắt màn hình tự động ngủ
+xset -dpms
+xset s off
+xset s noblank
+
+# Chạy Chromium ở kiosk mode
+chromium --noerrdialogs --disable-infobars --kiosk http://localhost:8080
+
+sudo chmod +x /usr/local/bin/start-chromium-kiosk.sh
+
+
+sudo nano /etc/systemd/system/chromium-kiosk.service
+
+[Unit]
+Description=Chromium Kiosk Mode
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=orangepi
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/startx /usr/local/bin/start-chromium-kiosk.sh --
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
