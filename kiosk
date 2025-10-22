@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Chromium Kiosk
+Exec=chromium --noerrdialogs --disable-infobars --kiosk http://localhost:8080
+X-GNOME-Autostart-enabled=true
