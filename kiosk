@@ -10,3 +10,6 @@ Exec=bash -c "sleep 5 && /usr/bin/chromium --noerrdialogs --disable-infobars --k
 X-GNOME-Autostart-enabled=true
 OnlyShowIn=XFCE;
 EOF
+
+
+https://be9dd6b7a19f.ngrok-free.app/welcome
