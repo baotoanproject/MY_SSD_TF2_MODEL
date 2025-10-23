@@ -41,10 +41,29 @@ SERVICE_UUID = "12345678-1234-5678-1234-56789abcdef0"
 WIFI_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef1"
 STATUS_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef2"
 
-LOCAL_NAME = "Pi-BLE"
+LOCAL_NAME = "orangepi-1"
 ADVERT_PATH_BASE = "/org/bluez/example/advertisement"
 APP_PATH = "/org/bluez/example/app"
 SERVICE_PATH_BASE = "/org/bluez/example/service"
+
+# =========================
+# Bluetooth Remove Helper
+# =========================
+def remove_bluetooth_device(mac_address):
+    """Xoá thiết bị BLE đã paired theo MAC (nếu có)."""
+    try:
+        bus = dbus.SystemBus()
+        adapter = dbus.Interface(
+            bus.get_object(BLUEZ, ADAPTER_PATH),
+            "org.bluez.Adapter1"
+        )
+        dev_path = ADAPTER_PATH + "/dev_" + mac_address.replace(":", "_")
+        adapter.RemoveDevice(dbus.ObjectPath(dev_path))
+        logger.info(f"✅ Đã xoá thiết bị Bluetooth: {mac_address}")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ Không thể xoá thiết bị {mac_address}: {e}")
+        return False
 
 # =========================
 # Advertisement
@@ -59,7 +78,7 @@ class Advertisement(dbus.service.Object):
         self.service_uuids = service_uuids
         self.local_name = LOCAL_NAME
         self.include_tx_power = True
-        self.connectable = True  # Cho phép connect GATT, KHÔNG yêu cầu bonding
+        self.connectable = True
         super().__init__(bus, self.path)
 
     def get_path(self):
@@ -73,7 +92,6 @@ class Advertisement(dbus.service.Object):
                 "ServiceUUIDs": dbus.Array(self.service_uuids, signature="s"),
                 "IncludeTxPower": dbus.Boolean(self.include_tx_power),
                 "Connectable": dbus.Boolean(self.connectable),
-                # Không thêm bất kỳ trường security nào → tránh pairing
             }
         }
 
@@ -102,7 +120,7 @@ class Characteristic(dbus.service.Object):
         self.path = f"{service.path}/char{index}"
         self.bus = bus
         self.uuid = uuid
-        self.flags = flags  # KHÔNG dùng encrypt-*/secure-* để tránh pairing
+        self.flags = flags
         self.service = service
         super().__init__(bus, self.path)
 
@@ -186,15 +204,6 @@ def connect_wifi(ssid, password, status_char=None):
         if wait_for_connection(ssid):
             logger.info(f"Wi-Fi connected: {ssid}")
             send("Connected")
-
-            # Optional: Auto-disconnect BLE after successful WiFi connection
-            # Uncomment if you want Pi to automatically disconnect BLE
-            # def auto_disconnect():
-            #     time.sleep(2)  # Give time for "Connected" status to be sent
-            #     logger.info("Auto-disconnecting BLE after successful WiFi connection")
-            #     import os
-            #     os._exit(0)
-            # threading.Thread(target=auto_disconnect, daemon=True).start()
         else:
             logger.error(f"Failed to connect to {ssid}")
             send("Failed")
@@ -217,14 +226,12 @@ class WifiStatusCharacteristic(Characteristic):
         pass
 
     def __init__(self, bus, index, service):
-        # Chỉ notify → không yêu cầu mã hóa
         super().__init__(bus, index, STATUS_CHAR_UUID, ["notify"], service)
         self.notifying = False
 
     def send_status(self, status_str):
         if not self.notifying:
             return
-        # String -> array of bytes
         value = [dbus.Byte(b) for b in status_str.encode("utf-8")]
         self.PropertiesChanged(GATT_CHRC_IFACE, {"Value": value}, [])
 
@@ -238,33 +245,55 @@ class WifiStatusCharacteristic(Characteristic):
 
 class WifiConfigCharacteristic(Characteristic):
     def __init__(self, bus, index, service):
-        # write / write-without-response → không yêu cầu pairing
         super().__init__(bus, index, WIFI_CHAR_UUID, ["write", "write-without-response"], service)
 
     @dbus.service.method(GATT_CHRC_IFACE, in_signature="aya{sv}", out_signature="")
     def WriteValue(self, value, options):
         try:
             payload = bytes(value).decode("utf-8", errors="ignore")
-            logger.info(f"Received payload: {payload[:80]}...")
+            logger.info(f"Received Wi-Fi config: {payload[:80]}...")
 
-            # Check if it's a disconnect command
+            # ---- NEW: remove command ----
+            if payload.strip().lower().startswith("remove"):
+                parts = payload.strip().split()
+                if len(parts) == 2:
+                    mac = parts[1].strip().upper()
+                    remove_bluetooth_device(mac)
+                    if hasattr(self.service, "status_char"):
+                        self.service.status_char.send_status(f"Removed {mac}")
+                else:
+                    if hasattr(self.service, "status_char"):
+                        self.service.status_char.send_status("MAC required (remove AA:BB:CC:DD:EE:FF)")
+                return
+
+            # ---- JSON style remove ----
+            if payload.strip().startswith("{"):
+                data = json.loads(payload)
+                if "cmd" in data and data["cmd"].lower() == "remove":
+                    mac = data.get("mac", "")
+                    if mac:
+                        remove_bluetooth_device(mac)
+                        self.service.status_char.send_status(f"Removed {mac}")
+                    else:
+                        self.service.status_char.send_status("MAC required")
+                    return
+
+            # ---- Disconnect command ----
             if payload.strip().lower() == "disconnect":
                 logger.info("Received disconnect command - terminating BLE service")
-                # Send acknowledgment
                 if hasattr(self.service, "status_char"):
                     self.service.status_char.send_status("Disconnecting")
 
-                # Schedule shutdown after a brief delay
                 def delayed_shutdown():
-                    time.sleep(0.5)  # Give time for status to be sent
+                    time.sleep(0.5)
                     logger.info("Shutting down BLE service...")
                     import os
-                    os._exit(0)  # Force exit the process
+                    os._exit(0)
 
                 threading.Thread(target=delayed_shutdown, daemon=True).start()
                 return
 
-            # Try to parse as WiFi config JSON
+            # ---- Normal Wi-Fi config ----
             data = json.loads(payload)
             ssid = data.get("ssid", "").strip()
             password = data.get("password", "")
@@ -280,12 +309,11 @@ class WifiConfigCharacteristic(Characteristic):
                 daemon=True
             ).start()
         except json.JSONDecodeError:
-            # If it's not JSON and not "disconnect", it's invalid
-            logger.error(f"Invalid payload (not JSON or disconnect): {payload}")
+            logger.error("Invalid JSON payload")
             if hasattr(self.service, "status_char"):
-                self.service.status_char.send_status("Invalid command")
-        except Exception as e:
-            logger.exception("Error parsing payload")
+                self.service.status_char.send_status("Invalid JSON")
+        except Exception:
+            logger.exception("Error parsing Wi-Fi config")
             if hasattr(self.service, "status_char"):
                 self.service.status_char.send_status("Error")
 
@@ -358,38 +386,16 @@ class Application(dbus.service.Object):
         return response
 
 # =========================
-# Utilities
-# =========================
-def power_on_adapter(bus):
-    props = dbus.Interface(bus.get_object(BLUEZ, ADAPTER_PATH), DBUS_PROP_IFACE)
-    try:
-        powered = props.Get("org.bluez.Adapter1", "Powered")
-        if not powered:
-            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(1))
-            time.sleep(0.5)
-    except Exception:
-        # Adapter có thể chưa có prop Powered (hiếm), cứ thử set
-        try:
-            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(1))
-            time.sleep(0.5)
-        except Exception as e:
-            logger.error(f"Cannot power on adapter: {e}")
-            raise
-
-# =========================
 # Main
 # =========================
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
 
-    power_on_adapter(bus)
-
     app = Application(bus)
     gatt_manager = dbus.Interface(bus.get_object(BLUEZ, ADAPTER_PATH), GATT_MANAGER_IFACE)
     adv_manager = dbus.Interface(bus.get_object(BLUEZ, ADAPTER_PATH), LE_ADV_MANAGER_IFACE)
 
-    # Register GATT
     gatt_manager.RegisterApplication(
         app.get_path(),
         {},
@@ -397,7 +403,6 @@ def main():
         error_handler=lambda e: logger.error(f"❌ RegisterApplication error: {e}")
     )
 
-    # Register Advertisement
     advert = Advertisement(bus, 0, [SERVICE_UUID])
     adv_manager.RegisterAdvertisement(
         advert.get_path(),
@@ -407,17 +412,14 @@ def main():
     )
 
     logger.info('🚀 Ready. Write JSON to WIFI_CHAR: {"ssid":"YourSSID","password":"YourPass"}')
-    logger.info("🔔 Subscribe STATUS_CHAR (notify) để nhận trạng thái: Connecting/Connected/Failed...")
+    logger.info("💬 Send 'remove AA:BB:CC:DD:EE:FF' to unpair device")
+    logger.info("💬 Send 'disconnect' to stop BLE service")
 
     loop = GLib.MainLoop()
 
     def cleanup(*_):
         try:
             adv_manager.UnregisterAdvertisement(advert.get_path())
-        except Exception:
-            pass
-        try:
-            advert.RemoveFromConnection = True  # no-op marker
         except Exception:
             pass
         logger.info("Bye.")
@@ -429,5 +431,4 @@ def main():
     loop.run()
 
 if __name__ == "__main__":
-    # Yêu cầu: sudo, bluez + bluetoothd đang chạy (có thể cần -E cho LE peripheral)
     main()
