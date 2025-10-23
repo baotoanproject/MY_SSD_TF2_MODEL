@@ -1,0 +1,15 @@
+[Unit]
+Description=GATT Server
+After=bluetooth.target
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/nets01/ble-gatt.py
+Restart=always
+RestartSec=5
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
+

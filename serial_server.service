@@ -1,0 +1,12 @@
+[Unit]
+Description=Pi Serial HTTP Server
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/nets01/get-serial-pi.py
+WorkingDirectory=/home/nets01
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
