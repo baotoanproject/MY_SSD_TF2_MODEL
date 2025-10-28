@@ -95,14 +95,33 @@ class BluetoothSpeakerService:
         try:
             logger.info("Scanning for Bluetooth speakers...")
 
-            # Bật scan mode
+            # Reset và clear cache trước khi scan
+            subprocess.run(['bluetoothctl', 'power', 'off'], capture_output=True)
+            time.sleep(1)
             subprocess.run(['bluetoothctl', 'power', 'on'], capture_output=True)
+            time.sleep(2)
+
+            # Setup agent
             subprocess.run(['bluetoothctl', 'agent', 'on'], capture_output=True)
             subprocess.run(['bluetoothctl', 'default-agent'], capture_output=True)
             subprocess.run(['bluetoothctl', 'discoverable', 'on'], capture_output=True)
             subprocess.run(['bluetoothctl', 'pairable', 'on'], capture_output=True)
 
+            # Remove devices cũ khỏi cache (optional)
+            old_devices = subprocess.run(
+                ['bluetoothctl', 'devices'],
+                capture_output=True,
+                text=True
+            )
+            for line in old_devices.stdout.split('\n'):
+                if line.strip() and 'Device' in line:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        mac = parts[1]
+                        subprocess.run(['bluetoothctl', 'remove', mac], capture_output=True)
+
             # Bắt đầu scan
+            logger.info("Starting Bluetooth scan...")
             scan_proc = subprocess.Popen(
                 ['bluetoothctl', 'scan', 'on'],
                 stdout=subprocess.PIPE,
@@ -110,11 +129,12 @@ class BluetoothSpeakerService:
                 text=True
             )
 
-            # Đợi scan 10 giây
-            time.sleep(10)
+            # Đợi scan 15 giây (tăng thời gian)
+            time.sleep(15)
 
             # Dừng scan
             scan_proc.terminate()
+            subprocess.run(['bluetoothctl', 'scan', 'off'], capture_output=True)
 
             # Lấy danh sách devices
             result = subprocess.run(
@@ -142,14 +162,27 @@ class BluetoothSpeakerService:
                         is_audio = 'Audio Sink' in info_result.stdout or \
                                   'Audio Source' in info_result.stdout or \
                                   'Headset' in info_result.stdout or \
-                                  'Speaker' in info_result.stdout
+                                  'Speaker' in info_result.stdout or \
+                                  'A2DP' in info_result.stdout or \
+                                  '0000110b' in info_result.stdout.lower() or \
+                                  '0000110a' in info_result.stdout.lower()
 
-                        if is_audio:
-                            devices.append({
-                                'mac': mac,
-                                'name': name,
-                                'type': 'audio'
-                            })
+                        # Debug: Log tất cả devices để kiểm tra
+                        logger.info(f"Device: {name} ({mac})")
+                        logger.info(f"Info: {info_result.stdout[:200]}...")
+                        logger.info(f"Is audio: {is_audio}")
+
+                        # Tạm thời hiển thị TẤT CẢ devices để debug
+                        device_info = {
+                            'mac': mac,
+                            'name': name,
+                            'type': 'audio' if is_audio else 'unknown'
+                        }
+                        devices.append(device_info)
+
+                        # Nếu muốn chỉ lọc audio devices, uncomment dòng dưới
+                        # if is_audio:
+                        #     devices.append(device_info)
 
             response = {
                 'action': 'scan_result',
