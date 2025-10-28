@@ -1,24 +1,11 @@
 [Unit]
 Description=OrangePi Bluetooth Speaker Service
 After=bluetooth.service network.target
-Wants=bluetooth.service
 
 [Service]
-Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi
-ExecStart=/usr/bin/python3 /home/pi/bluetooth_speaker_service.py
+ExecStart=/usr/bin/python3 /home/orangepi/bluetooth-speaker.py
+WorkingDirectory=/home/orangepi
 Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-# Đảm bảo Bluetooth service đã sẵn sàng
-ExecStartPre=/bin/sleep 10
-
-# Environment variables
-Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
