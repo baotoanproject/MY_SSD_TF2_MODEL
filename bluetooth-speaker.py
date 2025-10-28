@@ -1,100 +1,119 @@
 #!/usr/bin/env python3
 """
 Bluetooth Speaker Service for OrangePi Zero3
-Nhận lệnh từ Flutter app để kết nối/disconnect loa Bluetooth
+Nhận lệnh từ Flutter app qua TCP socket để kết nối/disconnect loa Bluetooth
+Sử dụng bluetoothctl và pactl có sẵn trên Debian 12
 """
 
-import asyncio
 import json
 import subprocess
-import time
-from bleak import BleakServer, BleakCharacteristic
-from bleak.uuids import uuid16_dict
+import socket
+import threading
 import logging
+import time
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Service và Characteristic UUIDs
-SPEAKER_SERVICE_UUID = "12345678-1234-5678-1234-56789abcdef3"
-SPEAKER_COMMAND_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef4"
-SPEAKER_STATUS_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef5"
+# TCP Server configuration
+HOST = '0.0.0.0'
+PORT = 8765
 
 class BluetoothSpeakerService:
     def __init__(self):
-        self.server = None
-        self.status_char = None
         self.connected_speakers = []
+        self.clients = []
+        self.server_socket = None
 
-    async def setup_server(self):
-        """Setup BLE server"""
+    def handle_client(self, client_socket, client_address):
+        """Xử lý kết nối từ client"""
+        logger.info(f"Client connected from {client_address}")
+        self.clients.append(client_socket)
 
-        async def command_handler(characteristic, data):
-            """Xử lý lệnh từ Flutter app"""
+        try:
+            while True:
+                data = client_socket.recv(1024)
+                if not data:
+                    break
+
+                try:
+                    command = json.loads(data.decode())
+                    logger.info(f"Received command: {command}")
+
+                    if command.get('action') == 'scan_speakers':
+                        self.scan_bluetooth_speakers(client_socket)
+                    elif command.get('action') == 'connect_speaker':
+                        mac_address = command.get('mac_address')
+                        self.connect_speaker(mac_address, client_socket)
+                    elif command.get('action') == 'disconnect_speaker':
+                        mac_address = command.get('mac_address')
+                        self.disconnect_speaker(mac_address, client_socket)
+                    elif command.get('action') == 'list_speakers':
+                        self.list_connected_speakers(client_socket)
+
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON: {e}")
+                    self.send_response(client_socket, {"error": "Invalid JSON"})
+                except Exception as e:
+                    logger.error(f"Error handling command: {e}")
+                    self.send_response(client_socket, {"error": str(e)})
+
+        except Exception as e:
+            logger.error(f"Client handler error: {e}")
+        finally:
+            self.clients.remove(client_socket)
+            client_socket.close()
+            logger.info(f"Client {client_address} disconnected")
+
+    def send_response(self, client_socket, response):
+        """Gửi response về client"""
+        try:
+            message = json.dumps(response) + "\n"
+            client_socket.sendall(message.encode())
+        except Exception as e:
+            logger.error(f"Error sending response: {e}")
+
+    def broadcast_response(self, response):
+        """Gửi response tới tất cả clients"""
+        for client in self.clients[:]:
             try:
-                command = json.loads(data.decode())
-                logger.info(f"Received command: {command}")
+                self.send_response(client, response)
+            except:
+                self.clients.remove(client)
 
-                if command.get('action') == 'scan_speakers':
-                    await self.scan_bluetooth_speakers()
-                elif command.get('action') == 'connect_speaker':
-                    mac_address = command.get('mac_address')
-                    await self.connect_speaker(mac_address)
-                elif command.get('action') == 'disconnect_speaker':
-                    mac_address = command.get('mac_address')
-                    await self.disconnect_speaker(mac_address)
-                elif command.get('action') == 'list_speakers':
-                    await self.list_connected_speakers()
-
-            except Exception as e:
-                logger.error(f"Error handling command: {e}")
-                await self.send_status(f"error: {str(e)}")
-
-        # Tạo service
-        service = BleakServer()
-
-        # Command characteristic (nhận lệnh từ app)
-        command_char = BleakCharacteristic(
-            SPEAKER_COMMAND_CHAR_UUID,
-            properties=["write"],
-            value=None,
-            descriptors=None
-        )
-        command_char.add_write_handler(command_handler)
-
-        # Status characteristic (gửi status về app)
-        self.status_char = BleakCharacteristic(
-            SPEAKER_STATUS_CHAR_UUID,
-            properties=["notify", "read"],
-            value=b"ready",
-            descriptors=None
-        )
-
-        # Thêm characteristics vào service
-        service.add_service(SPEAKER_SERVICE_UUID)
-        service.add_characteristic(command_char)
-        service.add_characteristic(self.status_char)
-
-        self.server = service
-
-    async def scan_bluetooth_speakers(self):
+    def scan_bluetooth_speakers(self, client_socket):
         """Scan và tìm loa Bluetooth"""
         try:
             logger.info("Scanning for Bluetooth speakers...")
 
-            # Sử dụng bluetoothctl để scan
-            result = subprocess.run([
-                'bluetoothctl', '--timeout=10', 'scan', 'on'
-            ], capture_output=True, text=True, timeout=15)
+            # Bật scan mode
+            subprocess.run(['bluetoothctl', 'power', 'on'], capture_output=True)
+            subprocess.run(['bluetoothctl', 'agent', 'on'], capture_output=True)
+            subprocess.run(['bluetoothctl', 'default-agent'], capture_output=True)
+            subprocess.run(['bluetoothctl', 'discoverable', 'on'], capture_output=True)
+            subprocess.run(['bluetoothctl', 'pairable', 'on'], capture_output=True)
 
-            # Đợi một chút để scan
-            await asyncio.sleep(10)
+            # Bắt đầu scan
+            scan_proc = subprocess.Popen(
+                ['bluetoothctl', 'scan', 'on'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            # Đợi scan 10 giây
+            time.sleep(10)
+
+            # Dừng scan
+            scan_proc.terminate()
 
             # Lấy danh sách devices
-            result = subprocess.run([
-                'bluetoothctl', 'devices'
-            ], capture_output=True, text=True)
+            result = subprocess.run(
+                ['bluetoothctl', 'devices'],
+                capture_output=True,
+                text=True
+            )
 
             devices = []
             for line in result.stdout.split('\n'):
@@ -103,113 +122,234 @@ class BluetoothSpeakerService:
                     if len(parts) >= 3:
                         mac = parts[1]
                         name = ' '.join(parts[2:])
-                        devices.append({'mac': mac, 'name': name})
+
+                        # Lấy thêm info của device
+                        info_result = subprocess.run(
+                            ['bluetoothctl', 'info', mac],
+                            capture_output=True,
+                            text=True
+                        )
+
+                        # Kiểm tra xem có phải audio device không
+                        is_audio = 'Audio Sink' in info_result.stdout or \
+                                  'Audio Source' in info_result.stdout or \
+                                  'Headset' in info_result.stdout or \
+                                  'Speaker' in info_result.stdout
+
+                        if is_audio:
+                            devices.append({
+                                'mac': mac,
+                                'name': name,
+                                'type': 'audio'
+                            })
 
             response = {
                 'action': 'scan_result',
                 'devices': devices
             }
 
-            await self.send_status(json.dumps(response))
+            self.send_response(client_socket, response)
 
         except Exception as e:
             logger.error(f"Error scanning speakers: {e}")
-            await self.send_status(f"scan_error: {str(e)}")
+            self.send_response(client_socket, {
+                'action': 'scan_error',
+                'error': str(e)
+            })
 
-    async def connect_speaker(self, mac_address):
+    def connect_speaker(self, mac_address, client_socket):
         """Kết nối tới loa Bluetooth"""
         try:
             logger.info(f"Connecting to speaker: {mac_address}")
 
             # Trust device
-            subprocess.run(['bluetoothctl', 'trust', mac_address])
+            subprocess.run(['bluetoothctl', 'trust', mac_address], capture_output=True)
 
-            # Pair device
-            pair_result = subprocess.run([
-                'bluetoothctl', 'pair', mac_address
-            ], capture_output=True, text=True, timeout=30)
+            # Pair device nếu chưa pair
+            pair_result = subprocess.run(
+                ['bluetoothctl', 'pair', mac_address],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
 
             # Connect device
-            connect_result = subprocess.run([
-                'bluetoothctl', 'connect', mac_address
-            ], capture_output=True, text=True, timeout=20)
+            connect_result = subprocess.run(
+                ['bluetoothctl', 'connect', mac_address],
+                capture_output=True,
+                text=True,
+                timeout=20
+            )
 
-            if connect_result.returncode == 0:
-                # Set as default audio sink
-                subprocess.run(['pactl', 'set-default-sink', f'bluez_sink.{mac_address.replace(":", "_")}.a2dp_sink'])
+            if 'Connection successful' in connect_result.stdout or connect_result.returncode == 0:
+                # Đợi một chút để device kết nối hoàn toàn
+                time.sleep(2)
 
-                self.connected_speakers.append(mac_address)
-                await self.send_status(f"connected: {mac_address}")
+                # Kiểm tra PulseAudio sinks
+                pa_result = subprocess.run(
+                    ['pactl', 'list', 'short', 'sinks'],
+                    capture_output=True,
+                    text=True
+                )
+
+                # Tìm sink của bluetooth device
+                mac_formatted = mac_address.replace(":", "_")
+                for line in pa_result.stdout.split('\n'):
+                    if mac_formatted in line:
+                        sink_name = line.split('\t')[1]
+                        # Set as default sink
+                        subprocess.run(['pactl', 'set-default-sink', sink_name])
+                        logger.info(f"Set {sink_name} as default audio sink")
+
+                if mac_address not in self.connected_speakers:
+                    self.connected_speakers.append(mac_address)
+
+                response = {
+                    'action': 'connect_result',
+                    'status': 'connected',
+                    'mac_address': mac_address
+                }
+                self.send_response(client_socket, response)
                 logger.info(f"Successfully connected to {mac_address}")
             else:
-                await self.send_status(f"connect_failed: {mac_address}")
+                response = {
+                    'action': 'connect_result',
+                    'status': 'failed',
+                    'mac_address': mac_address,
+                    'error': connect_result.stderr
+                }
+                self.send_response(client_socket, response)
                 logger.error(f"Failed to connect to {mac_address}")
 
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout connecting to {mac_address}")
+            self.send_response(client_socket, {
+                'action': 'connect_result',
+                'status': 'timeout',
+                'mac_address': mac_address
+            })
         except Exception as e:
             logger.error(f"Error connecting speaker: {e}")
-            await self.send_status(f"connect_error: {str(e)}")
+            self.send_response(client_socket, {
+                'action': 'connect_error',
+                'error': str(e),
+                'mac_address': mac_address
+            })
 
-    async def disconnect_speaker(self, mac_address):
+    def disconnect_speaker(self, mac_address, client_socket):
         """Ngắt kết nối loa Bluetooth"""
         try:
             logger.info(f"Disconnecting speaker: {mac_address}")
 
-            result = subprocess.run([
-                'bluetoothctl', 'disconnect', mac_address
-            ], capture_output=True, text=True)
+            result = subprocess.run(
+                ['bluetoothctl', 'disconnect', mac_address],
+                capture_output=True,
+                text=True
+            )
 
             if result.returncode == 0:
                 if mac_address in self.connected_speakers:
                     self.connected_speakers.remove(mac_address)
-                await self.send_status(f"disconnected: {mac_address}")
+
+                response = {
+                    'action': 'disconnect_result',
+                    'status': 'disconnected',
+                    'mac_address': mac_address
+                }
+                self.send_response(client_socket, response)
+                logger.info(f"Disconnected from {mac_address}")
             else:
-                await self.send_status(f"disconnect_failed: {mac_address}")
+                response = {
+                    'action': 'disconnect_result',
+                    'status': 'failed',
+                    'mac_address': mac_address,
+                    'error': result.stderr
+                }
+                self.send_response(client_socket, response)
 
         except Exception as e:
             logger.error(f"Error disconnecting speaker: {e}")
-            await self.send_status(f"disconnect_error: {str(e)}")
+            self.send_response(client_socket, {
+                'action': 'disconnect_error',
+                'error': str(e),
+                'mac_address': mac_address
+            })
 
-    async def list_connected_speakers(self):
+    def list_connected_speakers(self, client_socket):
         """Liệt kê loa đã kết nối"""
         try:
-            result = subprocess.run([
-                'bluetoothctl', 'info'
-            ], capture_output=True, text=True)
+            connected_devices = []
+
+            # Lấy danh sách paired devices
+            result = subprocess.run(
+                ['bluetoothctl', 'paired-devices'],
+                capture_output=True,
+                text=True
+            )
+
+            for line in result.stdout.split('\n'):
+                if line.strip() and 'Device' in line:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        mac = parts[1]
+                        name = ' '.join(parts[2:])
+
+                        # Kiểm tra connection status
+                        info_result = subprocess.run(
+                            ['bluetoothctl', 'info', mac],
+                            capture_output=True,
+                            text=True
+                        )
+
+                        if 'Connected: yes' in info_result.stdout:
+                            connected_devices.append({
+                                'mac': mac,
+                                'name': name,
+                                'connected': True
+                            })
 
             response = {
                 'action': 'connected_speakers',
-                'speakers': self.connected_speakers
+                'speakers': connected_devices
             }
 
-            await self.send_status(json.dumps(response))
+            self.send_response(client_socket, response)
 
         except Exception as e:
             logger.error(f"Error listing speakers: {e}")
-            await self.send_status(f"list_error: {str(e)}")
+            self.send_response(client_socket, {
+                'action': 'list_error',
+                'error': str(e)
+            })
 
-    async def send_status(self, message):
-        """Gửi status về Flutter app"""
-        if self.status_char:
-            await self.status_char.notify(message.encode())
+    def start_server(self):
+        """Start TCP server"""
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((HOST, PORT))
+        self.server_socket.listen(5)
 
-    async def start_server(self):
-        """Start BLE server"""
-        await self.setup_server()
-        await self.server.start()
-        logger.info("Bluetooth Speaker Service started")
+        logger.info(f"Bluetooth Speaker Service listening on {HOST}:{PORT}")
 
-        # Keep server running
         try:
             while True:
-                await asyncio.sleep(1)
+                client_socket, client_address = self.server_socket.accept()
+                client_thread = threading.Thread(
+                    target=self.handle_client,
+                    args=(client_socket, client_address)
+                )
+                client_thread.daemon = True
+                client_thread.start()
+
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
-            await self.server.stop()
+            if self.server_socket:
+                self.server_socket.close()
 
-async def main():
+def main():
     service = BluetoothSpeakerService()
-    await service.start_server()
+    service.start_server()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
