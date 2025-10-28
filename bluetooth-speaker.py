@@ -11,6 +11,7 @@ import socket
 import threading
 import logging
 import time
+import os
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +42,14 @@ class BluetoothSpeakerService:
                     command = json.loads(data.decode())
                     logger.info(f"Received command: {command}")
 
-                    if command.get('action') == 'scan_speakers':
+                    if command.get('action') == 'ping':
+                        # Respond to ping for device discovery
+                        self.send_response(client_socket, {
+                            'action': 'pong',
+                            'service': 'orangepi-bluetooth-speaker',
+                            'version': '1.0'
+                        })
+                    elif command.get('action') == 'scan_speakers':
                         self.scan_bluetooth_speakers(client_socket)
                     elif command.get('action') == 'connect_speaker':
                         mac_address = command.get('mac_address')
@@ -322,14 +330,59 @@ class BluetoothSpeakerService:
                 'error': str(e)
             })
 
+    def setup_mdns_advertisement(self):
+        """Setup mDNS advertisement để Flutter app có thể tự động tìm thấy"""
+        try:
+            # Tạo file avahi service
+            service_content = f"""<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+    <name replace-wildcards="yes">OrangePi Bluetooth Speaker %h</name>
+    <service>
+        <type>_orangepi-speaker._tcp</type>
+        <port>{PORT}</port>
+        <txt-record>version=1.0</txt-record>
+        <txt-record>service=bluetooth-speaker</txt-record>
+    </service>
+</service-group>"""
+
+            # Ghi file service
+            service_dir = '/etc/avahi/services'
+            service_file = f'{service_dir}/orangepi-speaker.service'
+
+            if os.path.exists(service_dir):
+                with open(service_file, 'w') as f:
+                    f.write(service_content)
+                logger.info("mDNS service advertisement created")
+
+                # Restart avahi để load service mới
+                try:
+                    subprocess.run(['systemctl', 'restart', 'avahi-daemon'], capture_output=True)
+                except:
+                    pass
+            else:
+                logger.warning("Avahi not available, skipping mDNS advertisement")
+
+        except Exception as e:
+            logger.warning(f"Could not setup mDNS: {e}")
+
     def start_server(self):
         """Start TCP server"""
+        # Setup mDNS advertisement
+        self.setup_mdns_advertisement()
+
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((HOST, PORT))
         self.server_socket.listen(5)
 
+        # Lấy IP thực tế
+        hostname = socket.gethostname()
+        local_ip = socket.gethostbyname(hostname)
+
         logger.info(f"Bluetooth Speaker Service listening on {HOST}:{PORT}")
+        logger.info(f"Local IP: {local_ip}")
+        logger.info(f"mDNS name: {hostname}.local")
 
         try:
             while True:
