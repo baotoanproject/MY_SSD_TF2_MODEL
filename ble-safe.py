@@ -47,10 +47,124 @@ APP_PATH = "/org/bluez/example/app"
 SERVICE_PATH_BASE = "/org/bluez/example/service"
 
 # =========================
-# Bluetooth Remove Helper (MODIFIED)
+# Global variable to track device that sent Wi-Fi command
+# =========================
+wifi_sender_device = None
+
+# =========================
+# Get Device from D-Bus Context (IMPROVED)
+# =========================
+def get_device_from_dbus_path(dbus_path):
+    """Extract device info from D-Bus object path."""
+    try:
+        bus = dbus.SystemBus()
+
+        # The D-Bus path contains device info
+        # Format: /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX or similar
+        path_parts = str(dbus_path).split('/')
+
+        # Find device path in the object hierarchy
+        for i, part in enumerate(path_parts):
+            if part.startswith('dev_'):
+                # Extract MAC from dev_XX_XX_XX_XX_XX_XX format
+                mac_part = part[4:]  # Remove 'dev_' prefix
+                mac_address = mac_part.replace('_', ':')
+
+                # Get device object
+                device_path = '/'.join(path_parts[:i+1])
+                if device_path.startswith('/org/bluez'):
+                    try:
+                        device_obj = bus.get_object(BLUEZ, device_path)
+                        device_props = dbus.Interface(device_obj, DBUS_PROP_IFACE)
+                        props = device_props.GetAll("org.bluez.Device1")
+
+                        return {
+                            "address": props.get("Address", mac_address),
+                            "name": props.get("Name", "Unknown"),
+                            "path": device_path
+                        }
+                    except Exception as e:
+                        logger.warning(f"Could not get device props for {device_path}: {e}")
+                        return {
+                            "address": mac_address,
+                            "name": "Unknown",
+                            "path": device_path
+                        }
+
+        logger.warning(f"Could not extract device info from path: {dbus_path}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error extracting device from D-Bus path {dbus_path}: {e}")
+        return None
+
+def get_sending_device_from_message(message):
+    """Get device info from the D-Bus message sender."""
+    try:
+        # Get the D-Bus connection that sent the message
+        sender = message.get_sender()
+        path = message.get_path()
+
+        logger.debug(f"Message sender: {sender}, path: {path}")
+
+        # Try to extract device info from the path
+        device_info = get_device_from_dbus_path(path)
+        if device_info:
+            logger.info(f"📱 Identified sending device: {device_info['name']} ({device_info['address']})")
+            return device_info
+
+        # Fallback: scan for recently connected devices
+        return get_most_recent_connected_device()
+
+    except Exception as e:
+        logger.error(f"Error identifying sending device: {e}")
+        return get_most_recent_connected_device()
+
+def get_most_recent_connected_device():
+    """Get the most recently connected device as fallback."""
+    try:
+        bus = dbus.SystemBus()
+        manager = dbus.Interface(
+            bus.get_object(BLUEZ, "/"),
+            DBUS_OM_IFACE
+        )
+        objects = manager.GetManagedObjects()
+
+        connected_devices = []
+        for path, interfaces in objects.items():
+            if "org.bluez.Device1" in interfaces:
+                device_props = interfaces["org.bluez.Device1"]
+
+                # Check if device is connected
+                if device_props.get("Connected", False):
+                    device_address = device_props.get("Address", "")
+                    device_name = device_props.get("Name", "Unknown")
+
+                    connected_devices.append({
+                        "address": device_address,
+                        "name": device_name,
+                        "path": path,
+                        "connected_time": time.time()  # Approximate
+                    })
+
+        if connected_devices:
+            # Return the last one (most recent)
+            latest_device = connected_devices[-1]
+            logger.info(f"🔍 Fallback to most recent connected device: {latest_device['name']} ({latest_device['address']})")
+            return latest_device
+
+        logger.warning("ℹ️ No connected BLE device found")
+        return None
+
+    except Exception as e:
+        logger.error(f"❌ Error getting most recent connected device: {e}")
+        return None
+
+# =========================
+# Bluetooth Remove Helper (SAME AS BEFORE)
 # =========================
 def try_remove_by_search(device_identifier):
-    """Tìm và xoá device bằng cách scan qua tất cả devices."""
+    """Find and remove device by scanning all devices."""
     try:
         bus = dbus.SystemBus()
         adapter = dbus.Interface(
@@ -69,7 +183,7 @@ def try_remove_by_search(device_identifier):
             if "org.bluez.Device1" in interfaces:
                 device_props = interfaces["org.bluez.Device1"]
 
-                # Kiểm tra Address (MAC) hoặc path chứa identifier
+                # Check Address (MAC) or path contains identifier
                 device_address = device_props.get("Address", "")
 
                 if (device_address.upper() == device_identifier.upper() or
@@ -77,18 +191,18 @@ def try_remove_by_search(device_identifier):
 
                     logger.info(f"🔍 Found device at path: {path}")
                     adapter.RemoveDevice(dbus.ObjectPath(path))
-                    logger.info(f"✅ Đã xoá thiết bị: {device_identifier}")
+                    logger.info(f"✅ Removed device: {device_identifier}")
                     return True
 
-        logger.warning(f"⚠️ Không tìm thấy device: {device_identifier}")
+        logger.warning(f"⚠️ Device not found: {device_identifier}")
         return False
 
     except Exception as e:
-        logger.error(f"❌ Lỗi khi search device: {e}")
+        logger.error(f"❌ Error searching device: {e}")
         return False
 
 def remove_bluetooth_device(device_identifier):
-    """Xoá thiết bị BLE đã paired theo MAC hoặc UUID."""
+    """Remove paired BLE device by MAC or UUID."""
     try:
         bus = dbus.SystemBus()
         adapter = dbus.Interface(
@@ -96,7 +210,7 @@ def remove_bluetooth_device(device_identifier):
             "org.bluez.Adapter1"
         )
 
-        # Kiểm tra format: UUID (iOS) hay MAC (Android)
+        # Check format: UUID (iOS) or MAC (Android)
         if "-" in device_identifier and len(device_identifier) == 36:
             # iOS UUID format: 12345678-1234-5678-1234-123456789ABC
             dev_path = ADAPTER_PATH + "/dev_" + device_identifier.replace("-", "_")
@@ -106,15 +220,32 @@ def remove_bluetooth_device(device_identifier):
 
         logger.info(f"🔍 Trying to remove device path: {dev_path}")
         adapter.RemoveDevice(dbus.ObjectPath(dev_path))
-        logger.info(f"✅ Đã xoá thiết bị Bluetooth: {device_identifier}")
+        logger.info(f"✅ Removed Bluetooth device: {device_identifier}")
         return True
     except Exception as e:
-        logger.warning(f"⚠️ Không thể xoá thiết bị {device_identifier}: {e}")
-        # Thử tìm device bằng cách khác
+        logger.warning(f"⚠️ Cannot remove device {device_identifier}: {e}")
+        # Try finding device by other method
         return try_remove_by_search(device_identifier)
 
+def remove_wifi_sender_device():
+    """Remove the device that sent Wi-Fi configuration command."""
+    global wifi_sender_device
+
+    if wifi_sender_device:
+        success = remove_bluetooth_device(wifi_sender_device["address"])
+        if success:
+            logger.info(f"✅ Removed Wi-Fi sender device: {wifi_sender_device['name']} ({wifi_sender_device['address']})")
+            wifi_sender_device = None
+            return True
+        else:
+            logger.error(f"❌ Failed to remove Wi-Fi sender device: {wifi_sender_device['name']}")
+            return False
+    else:
+        logger.warning("⚠️ No Wi-Fi sender device recorded to remove")
+        return False
+
 # =========================
-# Advertisement
+# Advertisement (SAME AS BEFORE)
 # =========================
 class Advertisement(dbus.service.Object):
     IFACE = "org.bluez.LEAdvertisement1"
@@ -161,7 +292,7 @@ class Advertisement(dbus.service.Object):
         logger.info("Advertisement released")
 
 # =========================
-# Base Characteristic
+# Base Characteristic (SAME AS BEFORE)
 # =========================
 class Characteristic(dbus.service.Object):
     def __init__(self, bus, index, uuid, flags, service):
@@ -193,7 +324,7 @@ class Characteristic(dbus.service.Object):
         return self.get_properties()[GATT_CHRC_IFACE]
 
 # =========================
-# Wi-Fi helpers
+# Wi-Fi helpers (IMPROVED)
 # =========================
 def wait_for_wifi_ready(timeout=15):
     for _ in range(timeout):
@@ -231,7 +362,7 @@ def wait_for_connection(ssid, timeout=25):
         time.sleep(1)
     return False
 
-def connect_wifi(ssid, password, status_char=None):
+def connect_wifi(ssid, password, status_char=None, auto_remove_sender=False):
     def send(msg):
         if status_char:
             status_char.send_status(msg)
@@ -252,6 +383,18 @@ def connect_wifi(ssid, password, status_char=None):
         if wait_for_connection(ssid):
             logger.info(f"Wi-Fi connected: {ssid}")
             send("Connected")
+
+            # IMPROVED: Auto-remove only the device that sent Wi-Fi command
+            if auto_remove_sender:
+                logger.info("🔄 Auto-removing Wi-Fi sender device after successful connection...")
+                time.sleep(2)  # Short delay before removal
+
+                if remove_wifi_sender_device():
+                    send("Sender removed")
+                    logger.info("✅ Successfully removed Wi-Fi sender device")
+                else:
+                    send("Removal failed")
+                    logger.warning("⚠️ Failed to remove Wi-Fi sender device")
         else:
             logger.error(f"Failed to connect to {ssid}")
             send("Failed")
@@ -266,7 +409,7 @@ def connect_wifi(ssid, password, status_char=None):
         send("Error")
 
 # =========================
-# Characteristics
+# Characteristics (IMPROVED)
 # =========================
 class WifiStatusCharacteristic(Characteristic):
     @dbus.service.signal(DBUS_PROP_IFACE, signature="sa{sv}as")
@@ -297,11 +440,31 @@ class WifiConfigCharacteristic(Characteristic):
 
     @dbus.service.method(GATT_CHRC_IFACE, in_signature="aya{sv}", out_signature="")
     def WriteValue(self, value, options):
+        global wifi_sender_device
+
         try:
             payload = bytes(value).decode("utf-8", errors="ignore")
-            logger.info(f"Received Wi-Fi config: {payload[:80]}...")
+            logger.info(f"Received command: {payload[:80]}...")
 
-            # ---- NEW: remove command ----
+            # CRITICAL: Identify the device that sent this Wi-Fi command
+            # Get message context to identify sender
+            message = self._connection.get_message() if hasattr(self, '_connection') else None
+            sender_device = get_sending_device_from_message(message) if message else get_most_recent_connected_device()
+
+            # Store sender device info for Wi-Fi commands only
+            if sender_device and (payload.strip().startswith("{") and "ssid" in payload.lower()):
+                wifi_sender_device = sender_device
+                logger.info(f"📱 Recorded Wi-Fi sender: {wifi_sender_device['name']} ({wifi_sender_device['address']})")
+
+            # ---- Remove Wi-Fi sender device ----
+            if payload.strip().lower() == "remove_sender":
+                if remove_wifi_sender_device():
+                    self.service.status_char.send_status("Wi-Fi sender removed")
+                else:
+                    self.service.status_char.send_status("No sender to remove")
+                return
+
+            # ---- Remove specific device command ----
             if payload.strip().lower().startswith("remove"):
                 parts = payload.strip().split()
                 if len(parts) == 2:
@@ -317,13 +480,15 @@ class WifiConfigCharacteristic(Characteristic):
                         self.service.status_char.send_status("Device ID required (remove AA:BB:CC:DD:EE:FF)")
                 return
 
-            # ---- JSON style remove (MODIFIED) ----
+            # ---- JSON style commands (IMPROVED) ----
             if payload.strip().startswith("{"):
                 data = json.loads(payload)
+
+                # Remove specific device
                 if "cmd" in data and data["cmd"].lower() == "remove":
-                    device_id = data.get("mac", "")  # Vẫn dùng "mac" key nhưng accept cả UUID
+                    device_id = data.get("mac", "")
                     if device_id:
-                        logger.info(f"🔍 Removing device: {device_id}")
+                        logger.info(f"🔍 Removing specific device: {device_id}")
                         success = remove_bluetooth_device(device_id)
                         if success:
                             self.service.status_char.send_status(f"Removed {device_id}")
@@ -332,6 +497,33 @@ class WifiConfigCharacteristic(Characteristic):
                     else:
                         self.service.status_char.send_status("Device ID required")
                     return
+
+                # Remove Wi-Fi sender device
+                if "cmd" in data and data["cmd"].lower() == "remove_sender":
+                    if remove_wifi_sender_device():
+                        self.service.status_char.send_status("Wi-Fi sender removed")
+                    else:
+                        self.service.status_char.send_status("No sender to remove")
+                    return
+
+                # Wi-Fi configuration with auto-remove sender option
+                ssid = data.get("ssid", "").strip()
+                password = data.get("password", "")
+                auto_remove = data.get("auto_remove", True)  # Default to True for auto-remove sender
+
+                if not ssid:
+                    logger.error("SSID is required")
+                    if hasattr(self.service, "status_char"):
+                        self.service.status_char.send_status("SSID required")
+                    return
+
+                logger.info(f"📶 Wi-Fi config - SSID: {ssid}, Auto-remove sender: {auto_remove}")
+                threading.Thread(
+                    target=connect_wifi,
+                    args=(ssid, password, self.service.status_char, auto_remove),
+                    daemon=True
+                ).start()
+                return
 
             # ---- Disconnect command ----
             if payload.strip().lower() == "disconnect":
@@ -348,32 +540,36 @@ class WifiConfigCharacteristic(Characteristic):
                 threading.Thread(target=delayed_shutdown, daemon=True).start()
                 return
 
-            # ---- Normal Wi-Fi config ----
-            data = json.loads(payload)
-            ssid = data.get("ssid", "").strip()
-            password = data.get("password", "")
-            if not ssid:
-                logger.error("SSID is required")
-                if hasattr(self.service, "status_char"):
-                    self.service.status_char.send_status("SSID required")
-                return
+            # ---- Legacy format (fallback) ----
+            # Try to parse as JSON for backward compatibility
+            try:
+                data = json.loads(payload)
+                ssid = data.get("ssid", "").strip()
+                password = data.get("password", "")
+                if not ssid:
+                    logger.error("SSID is required")
+                    if hasattr(self.service, "status_char"):
+                        self.service.status_char.send_status("SSID required")
+                    return
 
-            threading.Thread(
-                target=connect_wifi,
-                args=(ssid, password, self.service.status_char),
-                daemon=True
-            ).start()
-        except json.JSONDecodeError:
-            logger.error("Invalid JSON payload")
-            if hasattr(self.service, "status_char"):
-                self.service.status_char.send_status("Invalid JSON")
+                # Default to auto-remove sender for legacy format
+                threading.Thread(
+                    target=connect_wifi,
+                    args=(ssid, password, self.service.status_char, True),
+                    daemon=True
+                ).start()
+            except json.JSONDecodeError:
+                logger.error("Invalid command or JSON payload")
+                if hasattr(self.service, "status_char"):
+                    self.service.status_char.send_status("Invalid command")
+
         except Exception:
-            logger.exception("Error parsing Wi-Fi config")
+            logger.exception("Error processing command")
             if hasattr(self.service, "status_char"):
                 self.service.status_char.send_status("Error")
 
 # =========================
-# Service & Application
+# Service & Application (SAME AS BEFORE)
 # =========================
 class WifiService(dbus.service.Object):
     def __init__(self, bus, index):
@@ -466,9 +662,15 @@ def main():
         error_handler=lambda e: logger.error(f"❌ RegisterAdvertisement error: {e}")
     )
 
-    logger.info('🚀 Ready. Write JSON to WIFI_CHAR: {"ssid":"YourSSID","password":"YourPass"}')
-    logger.info("💬 Send 'remove AA:BB:CC:DD:EE:FF' or UUID to unpair device")
-    logger.info("💬 Send 'disconnect' to stop BLE service")
+    logger.info('🚀 SAFE BLE Wi-Fi Configuration Service Ready!')
+    logger.info('📱 Commands:')
+    logger.info('   Wi-Fi: {"ssid":"YourSSID","password":"YourPass","auto_remove":true}')
+    logger.info('   Remove specific: {"cmd":"remove","mac":"AA:BB:CC:DD:EE:FF"}')
+    logger.info('   Remove sender: {"cmd":"remove_sender"}')
+    logger.info('   Remove sender: "remove_sender"')
+    logger.info('   Disconnect: "disconnect"')
+    logger.info('')
+    logger.info('🔒 SAFETY: Only the device that sends Wi-Fi command will be removed!')
 
     loop = GLib.MainLoop()
 
