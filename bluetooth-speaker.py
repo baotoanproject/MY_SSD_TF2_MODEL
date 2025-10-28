@@ -59,6 +59,13 @@ class BluetoothSpeakerService:
                         self.disconnect_speaker(mac_address, client_socket)
                     elif command.get('action') == 'list_speakers':
                         self.list_connected_speakers(client_socket)
+                    elif command.get('action') == 'auto_reconnect':
+                        # Manual trigger auto-reconnect từ app
+                        threading.Thread(target=self.auto_reconnect_paired_devices, daemon=True).start()
+                        self.send_response(client_socket, {
+                            'action': 'auto_reconnect_started',
+                            'message': 'Auto-reconnect process started'
+                        })
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON: {e}")
@@ -470,21 +477,38 @@ class BluetoothSpeakerService:
     def auto_reconnect_paired_devices(self):
         """Tự động kết nối lại thiết bị đã pair sau khi reboot"""
         try:
-            logger.info("Auto-reconnecting paired devices...")
+            logger.info("Auto-reconnecting devices after reboot...")
 
             # Đảm bảo Bluetooth đã sẵn sàng
             subprocess.run(['bluetoothctl', 'power', 'on'], capture_output=True)
-            time.sleep(3)
+            time.sleep(5)
 
-            # Lấy danh sách paired devices
-            result = subprocess.run(
+            # Setup agent
+            subprocess.run(['bluetoothctl', 'agent', 'on'], capture_output=True)
+            subprocess.run(['bluetoothctl', 'default-agent'], capture_output=True)
+
+            # Lấy TẤT CẢ devices (bao gồm cả cache)
+            all_devices_result = subprocess.run(
+                ['bluetoothctl', 'devices'],
+                capture_output=True,
+                text=True
+            )
+
+            # Cũng lấy danh sách paired devices
+            paired_result = subprocess.run(
                 ['bluetoothctl', 'paired-devices'],
                 capture_output=True,
                 text=True
             )
 
+            logger.info(f"All devices: {all_devices_result.stdout}")
+            logger.info(f"Paired devices: {paired_result.stdout}")
+
             reconnected_count = 0
-            for line in result.stdout.split('\n'):
+            attempted_devices = []
+
+            # Xử lý tất cả devices từ cache
+            for line in all_devices_result.stdout.split('\n'):
                 if line.strip() and 'Device' in line:
                     parts = line.split()
                     if len(parts) >= 3:
@@ -499,13 +523,32 @@ class BluetoothSpeakerService:
                         )
 
                         is_connected = 'Connected: yes' in info_result.stdout
+                        is_paired = 'Paired: yes' in info_result.stdout
+                        is_trusted = 'Trusted: yes' in info_result.stdout
 
-                        # Reconnect TẤT CẢ paired devices chưa kết nối
-                        if not is_connected:
+                        logger.info(f"Device {name} ({mac}): Connected={is_connected}, Paired={is_paired}, Trusted={is_trusted}")
+
+                        # Thử reconnect nếu:
+                        # 1. Chưa kết nối
+                        # 2. Và (đã paired HOẶC đã trusted - có thể đã kết nối trước đây)
+                        if not is_connected and (is_paired or is_trusted):
                             logger.info(f"Attempting to reconnect: {name} ({mac})")
+                            attempted_devices.append(name)
 
-                            # Trust device trước
+                            # Trust device trước khi connect
                             subprocess.run(['bluetoothctl', 'trust', mac], capture_output=True)
+
+                            # Nếu chưa pair, thử pair lại
+                            if not is_paired:
+                                logger.info(f"Re-pairing {name}...")
+                                pair_result = subprocess.run(
+                                    ['bluetoothctl', 'pair', mac],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=20
+                                )
+                                if pair_result.returncode != 0:
+                                    logger.warning(f"Pairing failed for {name}: {pair_result.stderr}")
 
                             # Thử connect
                             connect_result = subprocess.run(
@@ -520,33 +563,35 @@ class BluetoothSpeakerService:
                                 reconnected_count += 1
 
                                 # Chỉ set default sink cho audio devices
-                                device_info_result = subprocess.run(
-                                    ['bluetoothctl', 'info', mac],
-                                    capture_output=True,
-                                    text=True
-                                )
-
-                                is_audio_device = 'Audio Sink' in device_info_result.stdout or \
-                                                 'Audio Source' in device_info_result.stdout or \
-                                                 'A2DP' in device_info_result.stdout
+                                is_audio_device = 'Audio Sink' in info_result.stdout or \
+                                                 'Audio Source' in info_result.stdout or \
+                                                 'A2DP' in info_result.stdout or \
+                                                 'Headset' in info_result.stdout
 
                                 if is_audio_device:
-                                    time.sleep(2)
+                                    time.sleep(3)
                                     mac_formatted = mac.replace(":", "_")
-                                    sink_name = f"bluez_sink.{mac_formatted}.a2dp_sink"
 
-                                    # Kiểm tra xem sink có tồn tại không
-                                    pa_result = subprocess.run(
-                                        ['pactl', 'list', 'short', 'sinks'],
-                                        capture_output=True,
-                                        text=True
-                                    )
+                                    # Đợi PulseAudio tạo sink
+                                    for retry in range(5):
+                                        pa_result = subprocess.run(
+                                            ['pactl', 'list', 'short', 'sinks'],
+                                            capture_output=True,
+                                            text=True
+                                        )
 
-                                    if mac_formatted in pa_result.stdout:
-                                        subprocess.run(['pactl', 'set-default-sink', sink_name], capture_output=True)
-                                        logger.info(f"Set {name} as default audio sink")
-                                else:
-                                    logger.info(f"Reconnected {name} (non-audio device)")
+                                        if mac_formatted in pa_result.stdout:
+                                            # Tìm tên sink chính xác
+                                            for sink_line in pa_result.stdout.split('\n'):
+                                                if mac_formatted in sink_line:
+                                                    sink_name = sink_line.split('\t')[1]
+                                                    subprocess.run(['pactl', 'set-default-sink', sink_name], capture_output=True)
+                                                    logger.info(f"Set {name} as default audio sink: {sink_name}")
+                                                    break
+                                            break
+                                        else:
+                                            logger.info(f"Waiting for PulseAudio sink... (retry {retry+1})")
+                                            time.sleep(2)
 
                             else:
                                 logger.warning(f"❌ Failed to reconnect: {name} - {connect_result.stderr}")
@@ -554,7 +599,9 @@ class BluetoothSpeakerService:
                         elif is_connected:
                             logger.info(f"Already connected: {name}")
 
-            logger.info(f"Auto-reconnect completed: {reconnected_count} devices reconnected")
+            logger.info(f"Auto-reconnect completed: {reconnected_count}/{len(attempted_devices)} devices reconnected")
+            if attempted_devices:
+                logger.info(f"Attempted devices: {', '.join(attempted_devices)}")
 
         except Exception as e:
             logger.error(f"Error in auto-reconnect: {e}")
@@ -564,8 +611,12 @@ class BluetoothSpeakerService:
         # Setup mDNS advertisement
         self.setup_mdns_advertisement()
 
-        # Auto-reconnect paired devices sau khi service khởi động
-        threading.Thread(target=self.auto_reconnect_paired_devices, daemon=True).start()
+        # Auto-reconnect paired devices sau khi service khởi động (delay 10s)
+        def delayed_reconnect():
+            time.sleep(10)  # Đợi 10 giây để system ổn định
+            self.auto_reconnect_paired_devices()
+
+        threading.Thread(target=delayed_reconnect, daemon=True).start()
 
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
