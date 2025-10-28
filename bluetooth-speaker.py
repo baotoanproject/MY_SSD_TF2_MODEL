@@ -319,15 +319,26 @@ class BluetoothSpeakerService:
         try:
             connected_devices = []
             all_paired_devices = []
+            all_devices = []
 
-            # Lấy danh sách paired devices
-            result = subprocess.run(
+            # Phương pháp 1: Lấy tất cả devices (bao gồm cả đã kết nối)
+            all_devices_result = subprocess.run(
+                ['bluetoothctl', 'devices'],
+                capture_output=True,
+                text=True
+            )
+            logger.info(f"All devices output: {all_devices_result.stdout}")
+
+            # Phương pháp 2: Lấy danh sách paired devices
+            paired_result = subprocess.run(
                 ['bluetoothctl', 'paired-devices'],
                 capture_output=True,
                 text=True
             )
+            logger.info(f"Paired devices output: {paired_result.stdout}")
 
-            for line in result.stdout.split('\n'):
+            # Xử lý tất cả devices (bao gồm cả connected nhưng chưa paired)
+            for line in all_devices_result.stdout.split('\n'):
                 if line.strip() and 'Device' in line:
                     parts = line.split()
                     if len(parts) >= 3:
@@ -341,11 +352,22 @@ class BluetoothSpeakerService:
                             text=True
                         )
 
+                        # Debug log chi tiết
+                        logger.info(f"=== Device: {name} ({mac}) ===")
+                        logger.info(f"Info output: {info_result.stdout}")
+
                         is_connected = 'Connected: yes' in info_result.stdout
+                        is_paired = 'Paired: yes' in info_result.stdout
+                        is_trusted = 'Trusted: yes' in info_result.stdout
+
                         is_audio = 'Audio Sink' in info_result.stdout or \
                                   'Audio Source' in info_result.stdout or \
                                   'Headset' in info_result.stdout or \
-                                  'A2DP' in info_result.stdout
+                                  'A2DP' in info_result.stdout or \
+                                  '0000110b' in info_result.stdout.lower() or \
+                                  '0000110a' in info_result.stdout.lower()
+
+                        logger.info(f"Connected: {is_connected}, Paired: {is_paired}, Audio: {is_audio}")
 
                         # Lấy thêm thông tin battery nếu có
                         battery_level = None
@@ -360,14 +382,18 @@ class BluetoothSpeakerService:
                             'mac': mac,
                             'name': name,
                             'connected': is_connected,
+                            'paired': is_paired,
                             'type': 'audio' if is_audio else 'other',
                             'battery': battery_level,
-                            'trusted': 'Trusted: yes' in info_result.stdout,
-                            'paired': True
+                            'trusted': is_trusted
                         }
 
                         # Thêm vào danh sách tương ứng
-                        all_paired_devices.append(device_info)
+                        all_devices.append(device_info)
+
+                        if is_paired:
+                            all_paired_devices.append(device_info)
+
                         if is_connected:
                             connected_devices.append(device_info)
 
@@ -381,17 +407,28 @@ class BluetoothSpeakerService:
             if sink_result.returncode == 0:
                 current_sink = sink_result.stdout.strip()
 
+            # Kiểm tra thêm từ PulseAudio
+            pa_sinks_result = subprocess.run(
+                ['pactl', 'list', 'short', 'sinks'],
+                capture_output=True,
+                text=True
+            )
+            logger.info(f"PulseAudio sinks: {pa_sinks_result.stdout}")
+
             response = {
                 'action': 'connected_speakers',
                 'connected_devices': connected_devices,
                 'all_paired_devices': all_paired_devices,
+                'all_devices': all_devices,  # Thêm tất cả devices để debug
                 'current_audio_sink': current_sink,
+                'pulseaudio_sinks': pa_sinks_result.stdout,  # Debug info
                 'total_connected': len(connected_devices),
-                'total_paired': len(all_paired_devices)
+                'total_paired': len(all_paired_devices),
+                'total_all': len(all_devices)
             }
 
             self.send_response(client_socket, response)
-            logger.info(f"Found {len(connected_devices)} connected, {len(all_paired_devices)} paired devices")
+            logger.info(f"Found {len(connected_devices)} connected, {len(all_paired_devices)} paired, {len(all_devices)} total devices")
 
         except Exception as e:
             logger.error(f"Error listing speakers: {e}")
