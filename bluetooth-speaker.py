@@ -97,11 +97,9 @@ class BluetoothSpeakerService:
         try:
             logger.info("Scanning for Bluetooth speakers...")
 
-            # Reset và clear cache trước khi scan
-            subprocess.run(['bluetoothctl', 'power', 'off'], capture_output=True)
-            time.sleep(1)
+            # KHÔNG reset power - chỉ setup agent và scan
+            # Đảm bảo Bluetooth đã bật
             subprocess.run(['bluetoothctl', 'power', 'on'], capture_output=True)
-            time.sleep(2)
 
             # Setup agent
             subprocess.run(['bluetoothctl', 'agent', 'on'], capture_output=True)
@@ -110,10 +108,12 @@ class BluetoothSpeakerService:
             subprocess.run(['bluetoothctl', 'pairable', 'on'], capture_output=True)
 
             # GIỮ NGUYÊN tất cả devices đã kết nối/paired
-            # Không xóa gì để tránh mất kết nối
-            logger.info("Keeping all existing devices, starting fresh scan...")
+            logger.info("Starting scan without disconnecting existing devices...")
 
-            # Bắt đầu scan
+            # Dừng scan cũ nếu có
+            subprocess.run(['bluetoothctl', 'scan', 'off'], capture_output=True)
+
+            # Bắt đầu scan mới
             logger.info("Starting Bluetooth scan...")
             scan_proc = subprocess.Popen(
                 ['bluetoothctl', 'scan', 'on'],
@@ -151,25 +151,24 @@ class BluetoothSpeakerService:
                             text=True
                         )
 
-                        # Kiểm tra xem có phải audio device không
-                        is_audio = 'Audio Sink' in info_result.stdout or \
-                                  'Audio Source' in info_result.stdout or \
-                                  'Headset' in info_result.stdout or \
-                                  'Speaker' in info_result.stdout or \
-                                  'A2DP' in info_result.stdout or \
-                                  '0000110b' in info_result.stdout.lower() or \
-                                  '0000110a' in info_result.stdout.lower()
+                        # KHÔNG FILTER GÌ HẾT - Hiển thị tất cả thiết bị
+                        logger.info(f"Found device: {name} ({mac})")
 
-                        # Debug: Log tất cả devices để kiểm tra
-                        logger.info(f"Device: {name} ({mac})")
-                        logger.info(f"Info: {info_result.stdout[:200]}...")
-                        logger.info(f"Is audio: {is_audio}")
+                        # Lấy thông tin cơ bản
+                        device_type = 'unknown'
+                        if 'Audio Sink' in info_result.stdout or 'Audio Source' in info_result.stdout:
+                            device_type = 'audio'
+                        elif 'Headset' in info_result.stdout or 'A2DP' in info_result.stdout:
+                            device_type = 'headset'
+                        elif 'Mouse' in info_result.stdout or 'Keyboard' in info_result.stdout:
+                            device_type = 'input'
+                        elif 'Phone' in info_result.stdout:
+                            device_type = 'phone'
 
-                        # Tạm thời hiển thị TẤT CẢ devices để debug
                         device_info = {
                             'mac': mac,
                             'name': name,
-                            'type': 'audio' if is_audio else 'unknown'
+                            'type': device_type
                         }
                         devices.append(device_info)
 
@@ -351,14 +350,18 @@ class BluetoothSpeakerService:
                         is_paired = 'Paired: yes' in info_result.stdout
                         is_trusted = 'Trusted: yes' in info_result.stdout
 
-                        is_audio = 'Audio Sink' in info_result.stdout or \
-                                  'Audio Source' in info_result.stdout or \
-                                  'Headset' in info_result.stdout or \
-                                  'A2DP' in info_result.stdout or \
-                                  '0000110b' in info_result.stdout.lower() or \
-                                  '0000110a' in info_result.stdout.lower()
+                        # Detect device type (không filter, chỉ classify)
+                        device_type = 'unknown'
+                        if 'Audio Sink' in info_result.stdout or 'Audio Source' in info_result.stdout:
+                            device_type = 'audio'
+                        elif 'Headset' in info_result.stdout or 'A2DP' in info_result.stdout:
+                            device_type = 'headset'
+                        elif 'Mouse' in info_result.stdout or 'Keyboard' in info_result.stdout:
+                            device_type = 'input'
+                        elif 'Phone' in info_result.stdout:
+                            device_type = 'phone'
 
-                        logger.info(f"Connected: {is_connected}, Paired: {is_paired}, Audio: {is_audio}")
+                        logger.info(f"Device: {name} - Connected: {is_connected}, Paired: {is_paired}, Type: {device_type}")
 
                         # Lấy thêm thông tin battery nếu có
                         battery_level = None
@@ -374,12 +377,12 @@ class BluetoothSpeakerService:
                             'name': name,
                             'connected': is_connected,
                             'paired': is_paired,
-                            'type': 'audio' if is_audio else 'other',
+                            'type': device_type,
                             'battery': battery_level,
                             'trusted': is_trusted
                         }
 
-                        # Thêm vào danh sách tương ứng
+                        # THÊM TẤT CẢ thiết bị không filter
                         all_devices.append(device_info)
 
                         if is_paired:
@@ -496,13 +499,9 @@ class BluetoothSpeakerService:
                         )
 
                         is_connected = 'Connected: yes' in info_result.stdout
-                        is_audio = 'Audio Sink' in info_result.stdout or \
-                                  'Audio Source' in info_result.stdout or \
-                                  'Headset' in info_result.stdout or \
-                                  'A2DP' in info_result.stdout
 
-                        # Chỉ reconnect audio devices chưa kết nối
-                        if is_audio and not is_connected:
+                        # Reconnect TẤT CẢ paired devices chưa kết nối
+                        if not is_connected:
                             logger.info(f"Attempting to reconnect: {name} ({mac})")
 
                             # Trust device trước
@@ -520,21 +519,34 @@ class BluetoothSpeakerService:
                                 logger.info(f"✅ Reconnected: {name}")
                                 reconnected_count += 1
 
-                                # Set as default sink nếu cần
-                                time.sleep(2)
-                                mac_formatted = mac.replace(":", "_")
-                                sink_name = f"bluez_sink.{mac_formatted}.a2dp_sink"
-
-                                # Kiểm tra xem sink có tồn tại không
-                                pa_result = subprocess.run(
-                                    ['pactl', 'list', 'short', 'sinks'],
+                                # Chỉ set default sink cho audio devices
+                                device_info_result = subprocess.run(
+                                    ['bluetoothctl', 'info', mac],
                                     capture_output=True,
                                     text=True
                                 )
 
-                                if mac_formatted in pa_result.stdout:
-                                    subprocess.run(['pactl', 'set-default-sink', sink_name], capture_output=True)
-                                    logger.info(f"Set {name} as default audio sink")
+                                is_audio_device = 'Audio Sink' in device_info_result.stdout or \
+                                                 'Audio Source' in device_info_result.stdout or \
+                                                 'A2DP' in device_info_result.stdout
+
+                                if is_audio_device:
+                                    time.sleep(2)
+                                    mac_formatted = mac.replace(":", "_")
+                                    sink_name = f"bluez_sink.{mac_formatted}.a2dp_sink"
+
+                                    # Kiểm tra xem sink có tồn tại không
+                                    pa_result = subprocess.run(
+                                        ['pactl', 'list', 'short', 'sinks'],
+                                        capture_output=True,
+                                        text=True
+                                    )
+
+                                    if mac_formatted in pa_result.stdout:
+                                        subprocess.run(['pactl', 'set-default-sink', sink_name], capture_output=True)
+                                        logger.info(f"Set {name} as default audio sink")
+                                else:
+                                    logger.info(f"Reconnected {name} (non-audio device)")
 
                             else:
                                 logger.warning(f"❌ Failed to reconnect: {name} - {connect_result.stderr}")
