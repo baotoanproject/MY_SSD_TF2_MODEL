@@ -718,69 +718,17 @@ class BluetoothSpeakerService:
         # Setup mDNS advertisement
         self.setup_mdns_advertisement()
 
-        # Auto-reconnect paired devices sau khi service khởi động với retry
-        def delayed_reconnect_with_retry():
+        # Auto-reconnect paired devices sau khi service khởi động
+        def delayed_reconnect():
             time.sleep(10)  # Đợi 10 giây để system ổn định
+            logger.info("=== Starting auto-reconnect ===")
 
-            # Thử reconnect 5 lần, mỗi lần cách nhau 30 giây
-            max_retries = 5
-            for attempt in range(max_retries):
-                logger.info(f"=== Auto-reconnect attempt {attempt + 1}/{max_retries} ===")
+            # Gọi auto_reconnect một lần
+            self.auto_reconnect_paired_devices()
 
-                # Gọi auto_reconnect
-                self.auto_reconnect_paired_devices()
+            logger.info("Auto-reconnect completed")
 
-                # Kiểm tra xem có kết nối được thiết bị audio nào không
-                connected_audio = False
-                try:
-                    # Lấy danh sách devices đã kết nối
-                    all_devices_result = subprocess.run(
-                        ['bluetoothctl', 'devices'],
-                        capture_output=True,
-                        text=True
-                    )
-
-                    for line in all_devices_result.stdout.split('\n'):
-                        if line.strip() and 'Device' in line:
-                            parts = line.split()
-                            if len(parts) >= 3:
-                                mac = parts[1]
-
-                                # Kiểm tra trạng thái
-                                info_result = subprocess.run(
-                                    ['bluetoothctl', 'info', mac],
-                                    capture_output=True,
-                                    text=True
-                                )
-
-                                is_connected = 'Connected: yes' in info_result.stdout
-                                is_audio = ('Audio Sink' in info_result.stdout or
-                                          'Audio Source' in info_result.stdout or
-                                          'A2DP' in info_result.stdout or
-                                          'Headset' in info_result.stdout)
-
-                                if is_connected and is_audio:
-                                    connected_audio = True
-                                    logger.info(f"✅ Audio device connected successfully")
-                                    break
-                except Exception as e:
-                    logger.error(f"Error checking connection status: {e}")
-
-                # Nếu đã kết nối được audio device, dừng retry
-                if connected_audio:
-                    logger.info("Audio device connected, stopping auto-reconnect attempts")
-                    break
-
-                # Nếu chưa phải lần thử cuối, đợi trước khi thử lại
-                if attempt < max_retries - 1:
-                    wait_time = 30  # Đợi 30 giây giữa các lần thử
-                    logger.info(f"No audio device connected yet, waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-                else:
-                    logger.info("Reached maximum auto-reconnect attempts")
-                    # Không cần set gì, giữ nguyên HDMI làm default
-
-        threading.Thread(target=delayed_reconnect_with_retry, daemon=True).start()
+        threading.Thread(target=delayed_reconnect, daemon=True).start()
 
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
