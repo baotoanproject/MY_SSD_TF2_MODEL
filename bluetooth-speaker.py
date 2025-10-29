@@ -150,11 +150,50 @@ class BluetoothSpeakerService:
                     time.sleep(2)
 
             logger.warning(f"Could not find PulseAudio sink for device {mac_address} after {max_retries} retries")
+            # Nếu không tìm thấy Bluetooth sink, set về audioCodec
+            self.set_default_to_audiocodec()
             return False
 
         except Exception as e:
             logger.error(f"Error setting default sink: {e}")
+            self.set_default_to_audiocodec()
             return False
+
+    def set_default_to_audiocodec(self):
+        """Set default sink về HDMI khi không có Bluetooth"""
+        try:
+            # Lấy danh sách sinks
+            pa_result = subprocess.run(
+                ['pactl', 'list', 'short', 'sinks'],
+                capture_output=True,
+                text=True
+            )
+
+            # Tìm HDMI sink (thường có tên như hdmi-playback hoặc alsa_output.platform-hdmi)
+            hdmi_sink = None
+            for line in pa_result.stdout.split('\n'):
+                if 'hdmi' in line.lower():
+                    parts = line.split('\t')
+                    if len(parts) >= 2:
+                        hdmi_sink = parts[1]
+                        break
+
+            if hdmi_sink:
+                set_result = subprocess.run(
+                    ['pactl', 'set-default-sink', hdmi_sink],
+                    capture_output=True,
+                    text=True
+                )
+                if set_result.returncode == 0:
+                    logger.info(f"✅ Set default audio sink to HDMI: {hdmi_sink}")
+                    self.move_all_streams_to_sink(hdmi_sink)
+                else:
+                    logger.error(f"Failed to set HDMI as default sink: {set_result.stderr}")
+            else:
+                logger.warning("Could not find HDMI sink")
+
+        except Exception as e:
+            logger.error(f"Error setting default to HDMI: {e}")
 
     def move_all_streams_to_sink(self, sink_name):
         """Di chuyển tất cả audio streams sang sink mới"""
