@@ -232,6 +232,7 @@ class BluetoothSpeakerService:
 
             # Tìm HDMI sink (LUÔN LUÔN ưu tiên HDMI)
             hdmi_sink = None
+            all_non_bluetooth_sinks = []
 
             for line in pa_result.stdout.split('\n'):
                 if line.strip() and 'bluez' not in line.lower():  # Bỏ qua Bluetooth
@@ -241,13 +242,16 @@ class BluetoothSpeakerService:
                     parts = line.split()
                     if len(parts) >= 2:
                         sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
-                        logger.debug(f"Checking sink: {sink_name}")
+                        all_non_bluetooth_sinks.append(sink_name)
+                        logger.info(f"Checking non-Bluetooth sink: {sink_name}")
 
                         # ✅ LUÔN LUÔN tìm HDMI
                         if 'hdmi' in sink_name.lower():
                             hdmi_sink = sink_name
                             logger.info(f"✅ Found HDMI sink: {hdmi_sink}")
                             break  # Tìm thấy HDMI thì dừng luôn
+
+            logger.info(f"All non-Bluetooth sinks found: {all_non_bluetooth_sinks}")
 
             # ✅ CHỈ dùng HDMI, KHÔNG dùng AudioCodec
             default_sink = hdmi_sink
