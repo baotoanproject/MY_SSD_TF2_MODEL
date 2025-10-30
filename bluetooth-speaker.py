@@ -221,26 +221,30 @@ class BluetoothSpeakerService:
         try:
             logger.info("Setting default audio sink to HDMI (always prioritize HDMI)...")
 
-            # ✅ Đợi PulseAudio sẵn sàng (retry up to 5 times)
-            max_retries = 5
+            # ✅ Đợi PulseAudio sẵn sàng (retry up to 15 times, 3s each = 45s total)
+            max_retries = 15
+            retry_delay = 3
+
             for retry in range(max_retries):
                 # Lấy danh sách sinks
                 pa_result = subprocess.run(
                     ['pactl', 'list', 'short', 'sinks'],
                     capture_output=True,
-                    text=True
+                    text=True,
+                    timeout=5
                 )
 
-                logger.info(f"Retry {retry+1}/{max_retries}: Available sinks:\n{pa_result.stdout}")
-
-                # Nếu có sinks, tiếp tục
+                # Nếu có sinks, log và break
                 if pa_result.stdout.strip():
+                    logger.info(f"✅ PulseAudio is ready! Available sinks:\n{pa_result.stdout}")
                     break
 
                 # Nếu chưa có sinks, đợi
                 if retry < max_retries - 1:
-                    logger.warning(f"No sinks found yet, waiting... ({retry+1}/{max_retries})")
-                    time.sleep(2)
+                    logger.warning(f"⏳ No sinks found yet, waiting {retry_delay}s... ({retry+1}/{max_retries})")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"❌ Timeout waiting for PulseAudio after {max_retries * retry_delay}s")
 
             # Nếu vẫn không có sinks sau khi retry
             if not pa_result.stdout.strip():
@@ -843,9 +847,13 @@ class BluetoothSpeakerService:
 
         # Auto-reconnect paired devices sau khi service khởi động
         def delayed_reconnect():
-            time.sleep(10)  # Đợi 10 giây để system ổn định
-            logger.info("=== Starting auto-reconnect ===")
+            # ✅ Đợi lâu hơn để đảm bảo HDMI đã được set
+            # PulseAudio có thể mất tới 45s để khởi động
+            wait_time = 60
+            logger.info(f"=== Will start auto-reconnect after {wait_time}s ===")
+            time.sleep(wait_time)
 
+            logger.info("=== Starting auto-reconnect ===")
             # Gọi auto_reconnect một lần
             self.auto_reconnect_paired_devices()
 
