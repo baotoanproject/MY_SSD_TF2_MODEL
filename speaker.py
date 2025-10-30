@@ -120,11 +120,18 @@ class BluetoothSpeakerService:
                 # Tìm sink của Bluetooth device
                 found_sink = None
                 for line in pa_result.stdout.split('\n'):
-                    if mac_formatted in line or (device_name and device_name.replace(" ", "_") in line):
-                        parts = line.split('\t')
+                    if line.strip() and 'bluez' in line.lower():
+                        # Split bằng whitespace
+                        # Format: [index] [sink-name] [module] [sample-spec] [state]
+                        # Example: 2    bluez_sink.XX_XX_XX_XX_XX_XX.a2dp_sink    module-bluez5-device.c    ...
+                        parts = line.split()
                         if len(parts) >= 2:
-                            found_sink = parts[1]
-                            break
+                            sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
+                            logger.debug(f"Checking Bluetooth sink: {sink_name}")
+                            if mac_formatted in sink_name or (device_name and device_name.replace(" ", "_") in sink_name):
+                                found_sink = sink_name
+                                logger.info(f"Found matching Bluetooth sink: {found_sink}")
+                                break
 
                 if found_sink:
                     # Set as default sink
@@ -159,8 +166,10 @@ class BluetoothSpeakerService:
             return False
 
     def set_default_to_audiocodec(self):
-        """Set default sink về HDMI khi không có Bluetooth"""
+        """Set default sink về HDMI/AudioCodec khi không có Bluetooth"""
         try:
+            logger.info("Setting default audio sink back to HDMI/AudioCodec...")
+
             # Lấy danh sách sinks
             pa_result = subprocess.run(
                 ['pactl', 'list', 'short', 'sinks'],
@@ -168,31 +177,55 @@ class BluetoothSpeakerService:
                 text=True
             )
 
-            # Tìm HDMI sink (thường có tên như hdmi-playback hoặc alsa_output.platform-hdmi)
-            hdmi_sink = None
-            for line in pa_result.stdout.split('\n'):
-                if 'hdmi' in line.lower():
-                    parts = line.split('\t')
-                    if len(parts) >= 2:
-                        hdmi_sink = parts[1]
-                        break
+            logger.info(f"Available sinks:\n{pa_result.stdout}")
 
-            if hdmi_sink:
+            # Tìm sink KHÔNG phải Bluetooth (ưu tiên HDMI, sau đó AudioCodec)
+            hdmi_sink = None
+            audiocodec_sink = None
+
+            for line in pa_result.stdout.split('\n'):
+                if line.strip() and 'bluez' not in line.lower():  # Bỏ qua Bluetooth
+                    # Split bằng whitespace
+                    # Format: [index] [sink-name] [module] [sample-spec] [state]
+                    # Example: 0    HDMI-Playback    module-alsa-sink.c    s16le 2ch 44100Hz    SUSPENDED
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
+                        logger.debug(f"Checking sink: {sink_name}")
+
+                        # Ưu tiên HDMI
+                        if 'hdmi' in sink_name.lower():
+                            hdmi_sink = sink_name
+                            logger.info(f"Found HDMI sink: {hdmi_sink}")
+                            break
+                        # Fallback sang AudioCodec
+                        elif 'audiocodec' in sink_name.lower() or 'codec' in sink_name.lower():
+                            audiocodec_sink = sink_name
+                            logger.info(f"Found AudioCodec sink: {audiocodec_sink}")
+
+            # Chọn sink: ưu tiên HDMI, không có thì AudioCodec
+            default_sink = hdmi_sink or audiocodec_sink
+
+            if default_sink:
                 set_result = subprocess.run(
-                    ['pactl', 'set-default-sink', hdmi_sink],
+                    ['pactl', 'set-default-sink', default_sink],
                     capture_output=True,
                     text=True
                 )
                 if set_result.returncode == 0:
-                    logger.info(f"✅ Set default audio sink to HDMI: {hdmi_sink}")
-                    self.move_all_streams_to_sink(hdmi_sink)
+                    logger.info(f"✅ Set default audio sink to: {default_sink}")
+                    self.move_all_streams_to_sink(default_sink)
+                    return True
                 else:
-                    logger.error(f"Failed to set HDMI as default sink: {set_result.stderr}")
+                    logger.error(f"Failed to set default sink: {set_result.stderr}")
+                    return False
             else:
-                logger.warning("Could not find HDMI sink")
+                logger.warning("Could not find non-Bluetooth sink")
+                return False
 
         except Exception as e:
-            logger.error(f"Error setting default to HDMI: {e}")
+            logger.error(f"Error setting default sink: {e}")
+            return False
 
     def move_all_streams_to_sink(self, sink_name):
         """Di chuyển tất cả audio streams sang sink mới"""
@@ -403,6 +436,9 @@ class BluetoothSpeakerService:
             if result.returncode == 0:
                 if mac_address in self.connected_speakers:
                     self.connected_speakers.remove(mac_address)
+
+                # ✅ Set default sink về HDMI sau khi disconnect Bluetooth
+                self.set_default_to_audiocodec()
 
                 response = {
                     'action': 'disconnect_result',
@@ -702,7 +738,13 @@ class BluetoothSpeakerService:
                             if is_audio_device:
                                 logger.info(f"Ensuring {name} is set as default audio sink...")
                                 if self.set_bluetooth_as_default_sink(mac, name):
+                                    audio_devices_reconnected.append(name)
                                     logger.info(f"✅ {name} is confirmed as default audio sink")
+
+            # Nếu không reconnect được thiết bị audio nào, set về HDMI
+            if not audio_devices_reconnected:
+                logger.info("No audio devices reconnected, setting default sink to HDMI...")
+                self.set_default_to_audiocodec()
 
             logger.info(f"Auto-reconnect completed: {reconnected_count}/{len(attempted_devices)} devices reconnected")
             if audio_devices_reconnected:
@@ -715,6 +757,10 @@ class BluetoothSpeakerService:
 
     def start_server(self):
         """Start TCP server"""
+        # ✅ Set HDMI làm default sink ngay từ đầu
+        logger.info("Initializing audio system...")
+        self.set_default_to_audiocodec()
+
         # Setup mDNS advertisement
         self.setup_mdns_advertisement()
 
