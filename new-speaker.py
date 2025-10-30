@@ -221,14 +221,31 @@ class BluetoothSpeakerService:
         try:
             logger.info("Setting default audio sink to HDMI (always prioritize HDMI)...")
 
-            # Lấy danh sách sinks
-            pa_result = subprocess.run(
-                ['pactl', 'list', 'short', 'sinks'],
-                capture_output=True,
-                text=True
-            )
+            # ✅ Đợi PulseAudio sẵn sàng (retry up to 5 times)
+            max_retries = 5
+            for retry in range(max_retries):
+                # Lấy danh sách sinks
+                pa_result = subprocess.run(
+                    ['pactl', 'list', 'short', 'sinks'],
+                    capture_output=True,
+                    text=True
+                )
 
-            logger.info(f"Available sinks:\n{pa_result.stdout}")
+                logger.info(f"Retry {retry+1}/{max_retries}: Available sinks:\n{pa_result.stdout}")
+
+                # Nếu có sinks, tiếp tục
+                if pa_result.stdout.strip():
+                    break
+
+                # Nếu chưa có sinks, đợi
+                if retry < max_retries - 1:
+                    logger.warning(f"No sinks found yet, waiting... ({retry+1}/{max_retries})")
+                    time.sleep(2)
+
+            # Nếu vẫn không có sinks sau khi retry
+            if not pa_result.stdout.strip():
+                logger.error("❌ No sinks available after retries!")
+                return False
 
             # Tìm HDMI sink (LUÔN LUÔN ưu tiên HDMI)
             hdmi_sink = None
