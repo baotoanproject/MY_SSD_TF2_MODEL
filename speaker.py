@@ -27,91 +27,6 @@ class BluetoothSpeakerService:
         self.clients = []
         self.server_socket = None
 
-        # ✅ Detect PulseAudio user and ensure it's running
-        self.pulse_env = self._get_pulse_env()
-
-    def _ensure_pulseaudio_running(self):
-        """Ensure PulseAudio is running, start if needed"""
-        try:
-            # Kiểm tra PulseAudio có chạy không (UID 1000 = user orangepi)
-            ps_result = subprocess.run(['pgrep', '-u', '1000', 'pulseaudio'],
-                                       capture_output=True)
-
-            if ps_result.returncode != 0:
-                logger.warning("PulseAudio not running, attempting to start...")
-
-                # Start PulseAudio với environment của user orangepi
-                pulse_env = {
-                    'HOME': '/home/orangepi',
-                    'USER': 'orangepi',
-                    'XDG_RUNTIME_DIR': '/run/user/1000',
-                    'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus'
-                }
-
-                # Start PulseAudio
-                subprocess.Popen(
-                    ['pulseaudio', '--start', '--log-target=syslog'],
-                    env=pulse_env
-                )
-
-                # Đợi PulseAudio khởi động
-                logger.info("Waiting for PulseAudio to start...")
-                time.sleep(5)
-
-                # Verify PulseAudio đã chạy
-                verify_result = subprocess.run(['pgrep', '-u', '1000', 'pulseaudio'],
-                                              capture_output=True)
-                if verify_result.returncode == 0:
-                    logger.info("✅ PulseAudio started successfully")
-                    return True
-                else:
-                    logger.error("❌ Failed to start PulseAudio")
-                    return False
-            else:
-                logger.info("✅ PulseAudio is already running")
-                return True
-
-        except Exception as e:
-            logger.error(f"Error checking/starting PulseAudio: {e}")
-            return False
-
-    def _get_pulse_env(self):
-        """Get environment for PulseAudio commands"""
-        # ✅ Đảm bảo PulseAudio đang chạy TRƯỚC KHI lấy env
-        self._ensure_pulseaudio_running()
-
-        env = os.environ.copy()
-
-        # Thử tìm PulseAudio socket của user orangepi
-        try:
-            # Check user orangepi (UID thường là 1000)
-            pulse_socket = '/run/user/1000/pulse/native'
-            if os.path.exists(pulse_socket):
-                env['PULSE_SERVER'] = f'unix:{pulse_socket}'
-                logger.info(f"Using PulseAudio socket: {pulse_socket}")
-                return env
-
-            # Nếu không có, thử tìm bằng cách khác
-            result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
-            for line in result.stdout.split('\n'):
-                if 'pulseaudio' in line and 'orangepi' in line:
-                    logger.info("Found PulseAudio running as user orangepi")
-                    env['PULSE_SERVER'] = 'unix:/run/user/1000/pulse/native'
-                    return env
-
-        except Exception as e:
-            logger.warning(f"Could not detect PulseAudio user: {e}")
-
-        # Fallback: dùng default
-        return env
-
-    def _run_pactl(self, *args, **kwargs):
-        """Helper to run pactl commands with correct environment"""
-        # ✅ Không dùng env từ self.pulse_env nữa
-        # Để pactl tự detect PulseAudio khi chạy trong user session
-        # kwargs['env'] = self.pulse_env
-        return subprocess.run(['pactl'] + list(args), **kwargs)
-
     def handle_client(self, client_socket, client_address):
         """Xử lý kết nối từ client"""
         logger.info(f"Client connected from {client_address}")
@@ -195,8 +110,8 @@ class BluetoothSpeakerService:
             max_retries = 10
             for retry in range(max_retries):
                 # Lấy danh sách sinks
-                pa_result = self._run_pactl(
-                    'list', 'short', 'sinks',
+                pa_result = subprocess.run(
+                    ['pactl', 'list', 'short', 'sinks'],
                     capture_output=True,
                     text=True
                 )
@@ -259,8 +174,8 @@ class BluetoothSpeakerService:
                 if found_sink and best_match_score >= 50:  # Chỉ chấp nhận match score >= 50
                     # Set as default sink
                     logger.info(f"Attempting to set {found_sink} as default sink...")
-                    set_result = self._run_pactl(
-                        'set-default-sink', found_sink,
+                    set_result = subprocess.run(
+                        ['pactl', 'set-default-sink', found_sink],
                         capture_output=True,
                         text=True
                     )
@@ -272,8 +187,8 @@ class BluetoothSpeakerService:
                         self.move_all_streams_to_sink(found_sink)
 
                         # Verify
-                        verify_result = self._run_pactl(
-                            'get-default-sink',
+                        verify_result = subprocess.run(
+                            ['pactl', 'get-default-sink'],
                             capture_output=True,
                             text=True
                         )
@@ -306,31 +221,26 @@ class BluetoothSpeakerService:
         try:
             logger.info("Setting default audio sink to HDMI (always prioritize HDMI)...")
 
-            # ✅ Đợi PulseAudio sẵn sàng (retry up to 20 times, 3s each = 60s total)
-            max_retries = 20
-            retry_delay = 3
-
+            # ✅ Đợi PulseAudio sẵn sàng (retry up to 5 times)
+            max_retries = 5
             for retry in range(max_retries):
                 # Lấy danh sách sinks
-                pa_result = self._run_pactl(
-                    'list', 'short', 'sinks',
+                pa_result = subprocess.run(
+                    ['pactl', 'list', 'short', 'sinks'],
                     capture_output=True,
-                    text=True,
-                    timeout=5
+                    text=True
                 )
 
-                # Nếu có sinks, log và break
+                logger.info(f"Retry {retry+1}/{max_retries}: Available sinks:\n{pa_result.stdout}")
+
+                # Nếu có sinks, tiếp tục
                 if pa_result.stdout.strip():
-                    sink_count = len([line for line in pa_result.stdout.split('\n') if line.strip()])
-                    logger.info(f"✅ PulseAudio is ready after retry #{retry+1}! Found {sink_count} sinks")
                     break
 
                 # Nếu chưa có sinks, đợi
                 if retry < max_retries - 1:
-                    logger.warning(f"⏳ No sinks found yet, waiting {retry_delay}s... ({retry+1}/{max_retries})")
-                    time.sleep(retry_delay)
-                else:
-                    logger.error(f"❌ Timeout waiting for PulseAudio after {max_retries * retry_delay}s")
+                    logger.warning(f"No sinks found yet, waiting... ({retry+1}/{max_retries})")
+                    time.sleep(2)
 
             # Nếu vẫn không có sinks sau khi retry
             if not pa_result.stdout.strip():
@@ -364,8 +274,8 @@ class BluetoothSpeakerService:
             default_sink = hdmi_sink
 
             if default_sink:
-                set_result = self._run_pactl(
-                    'set-default-sink', default_sink,
+                set_result = subprocess.run(
+                    ['pactl', 'set-default-sink', default_sink],
                     capture_output=True,
                     text=True
                 )
@@ -374,8 +284,8 @@ class BluetoothSpeakerService:
                     self.move_all_streams_to_sink(default_sink)
 
                     # Verify
-                    verify_result = self._run_pactl(
-                        'get-default-sink',
+                    verify_result = subprocess.run(
+                        ['pactl', 'get-default-sink'],
                         capture_output=True,
                         text=True
                     )
@@ -398,8 +308,8 @@ class BluetoothSpeakerService:
         """Di chuyển tất cả audio streams sang sink mới"""
         try:
             # Lấy danh sách các sink inputs
-            list_result = self._run_pactl(
-                'list', 'short', 'sink-inputs',
+            list_result = subprocess.run(
+                ['pactl', 'list', 'short', 'sink-inputs'],
                 capture_output=True,
                 text=True
             )
@@ -410,8 +320,8 @@ class BluetoothSpeakerService:
                     parts = line.split('\t')
                     if len(parts) >= 1:
                         input_id = parts[0]
-                        self._run_pactl(
-                            'move-sink-input', input_id, sink_name,
+                        subprocess.run(
+                            ['pactl', 'move-sink-input', input_id, sink_name],
                             capture_output=True
                         )
                         logger.info(f"Moved audio stream {input_id} to {sink_name}")
@@ -718,8 +628,8 @@ class BluetoothSpeakerService:
 
             # Kiểm tra audio sink hiện tại
             current_sink = None
-            sink_result = self._run_pactl(
-                'get-default-sink',
+            sink_result = subprocess.run(
+                ['pactl', 'get-default-sink'],
                 capture_output=True,
                 text=True
             )
@@ -727,8 +637,8 @@ class BluetoothSpeakerService:
                 current_sink = sink_result.stdout.strip()
 
             # Kiểm tra thêm từ PulseAudio
-            pa_sinks_result = self._run_pactl(
-                'list', 'short', 'sinks',
+            pa_sinks_result = subprocess.run(
+                ['pactl', 'list', 'short', 'sinks'],
                 capture_output=True,
                 text=True
             )
@@ -926,26 +836,16 @@ class BluetoothSpeakerService:
         """Start TCP server"""
         # ✅ Set HDMI làm default sink ngay từ đầu
         logger.info("Initializing audio system...")
-        hdmi_set_success = self.set_default_to_audiocodec()
+        self.set_default_to_audiocodec()
 
         # Setup mDNS advertisement
         self.setup_mdns_advertisement()
 
         # Auto-reconnect paired devices sau khi service khởi động
         def delayed_reconnect():
-            # ✅ Đợi một chút để đảm bảo system ổn định
-            # Nếu HDMI đã set thành công, chỉ cần đợi 10s
-            # Nếu không, đợi lâu hơn
-            if hdmi_set_success:
-                wait_time = 10
-                logger.info(f"=== HDMI is ready. Will start auto-reconnect after {wait_time}s ===")
-            else:
-                wait_time = 30
-                logger.info(f"=== HDMI not set. Will retry auto-reconnect after {wait_time}s ===")
-
-            time.sleep(wait_time)
-
+            time.sleep(10)  # Đợi 10 giây để system ổn định
             logger.info("=== Starting auto-reconnect ===")
+
             # Gọi auto_reconnect một lần
             self.auto_reconnect_paired_devices()
 
