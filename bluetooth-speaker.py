@@ -27,6 +27,41 @@ class BluetoothSpeakerService:
         self.clients = []
         self.server_socket = None
 
+        # ✅ Detect PulseAudio user
+        self.pulse_env = self._get_pulse_env()
+
+    def _get_pulse_env(self):
+        """Get environment for PulseAudio commands"""
+        env = os.environ.copy()
+
+        # Thử tìm PulseAudio socket của user orangepi
+        try:
+            # Check user orangepi (UID thường là 1000)
+            pulse_socket = '/run/user/1000/pulse/native'
+            if os.path.exists(pulse_socket):
+                env['PULSE_SERVER'] = f'unix:{pulse_socket}'
+                logger.info(f"Using PulseAudio socket: {pulse_socket}")
+                return env
+
+            # Nếu không có, thử tìm bằng cách khác
+            result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
+            for line in result.stdout.split('\n'):
+                if 'pulseaudio' in line and 'orangepi' in line:
+                    logger.info("Found PulseAudio running as user orangepi")
+                    env['PULSE_SERVER'] = 'unix:/run/user/1000/pulse/native'
+                    return env
+
+        except Exception as e:
+            logger.warning(f"Could not detect PulseAudio user: {e}")
+
+        # Fallback: dùng default
+        return env
+
+    def _run_pactl(self, *args, **kwargs):
+        """Helper to run pactl commands with correct environment"""
+        kwargs['env'] = self.pulse_env
+        return subprocess.run(['pactl'] + list(args), **kwargs)
+
     def handle_client(self, client_socket, client_address):
         """Xử lý kết nối từ client"""
         logger.info(f"Client connected from {client_address}")
@@ -110,8 +145,8 @@ class BluetoothSpeakerService:
             max_retries = 10
             for retry in range(max_retries):
                 # Lấy danh sách sinks
-                pa_result = subprocess.run(
-                    ['pactl', 'list', 'short', 'sinks'],
+                pa_result = self._run_pactl(
+                    'list', 'short', 'sinks',
                     capture_output=True,
                     text=True
                 )
@@ -174,8 +209,8 @@ class BluetoothSpeakerService:
                 if found_sink and best_match_score >= 50:  # Chỉ chấp nhận match score >= 50
                     # Set as default sink
                     logger.info(f"Attempting to set {found_sink} as default sink...")
-                    set_result = subprocess.run(
-                        ['pactl', 'set-default-sink', found_sink],
+                    set_result = self._run_pactl(
+                        'set-default-sink', found_sink,
                         capture_output=True,
                         text=True
                     )
@@ -187,8 +222,8 @@ class BluetoothSpeakerService:
                         self.move_all_streams_to_sink(found_sink)
 
                         # Verify
-                        verify_result = subprocess.run(
-                            ['pactl', 'get-default-sink'],
+                        verify_result = self._run_pactl(
+                            'get-default-sink',
                             capture_output=True,
                             text=True
                         )
@@ -227,8 +262,8 @@ class BluetoothSpeakerService:
 
             for retry in range(max_retries):
                 # Lấy danh sách sinks
-                pa_result = subprocess.run(
-                    ['pactl', 'list', 'short', 'sinks'],
+                pa_result = self._run_pactl(
+                    'list', 'short', 'sinks',
                     capture_output=True,
                     text=True,
                     timeout=5
@@ -236,7 +271,8 @@ class BluetoothSpeakerService:
 
                 # Nếu có sinks, log và break
                 if pa_result.stdout.strip():
-                    logger.info(f"✅ PulseAudio is ready! Available sinks:\n{pa_result.stdout}")
+                    sink_count = len([line for line in pa_result.stdout.split('\n') if line.strip()])
+                    logger.info(f"✅ PulseAudio is ready after retry #{retry+1}! Found {sink_count} sinks")
                     break
 
                 # Nếu chưa có sinks, đợi
@@ -278,8 +314,8 @@ class BluetoothSpeakerService:
             default_sink = hdmi_sink
 
             if default_sink:
-                set_result = subprocess.run(
-                    ['pactl', 'set-default-sink', default_sink],
+                set_result = self._run_pactl(
+                    'set-default-sink', default_sink,
                     capture_output=True,
                     text=True
                 )
@@ -288,8 +324,8 @@ class BluetoothSpeakerService:
                     self.move_all_streams_to_sink(default_sink)
 
                     # Verify
-                    verify_result = subprocess.run(
-                        ['pactl', 'get-default-sink'],
+                    verify_result = self._run_pactl(
+                        'get-default-sink',
                         capture_output=True,
                         text=True
                     )
@@ -312,8 +348,8 @@ class BluetoothSpeakerService:
         """Di chuyển tất cả audio streams sang sink mới"""
         try:
             # Lấy danh sách các sink inputs
-            list_result = subprocess.run(
-                ['pactl', 'list', 'short', 'sink-inputs'],
+            list_result = self._run_pactl(
+                'list', 'short', 'sink-inputs',
                 capture_output=True,
                 text=True
             )
@@ -324,8 +360,8 @@ class BluetoothSpeakerService:
                     parts = line.split('\t')
                     if len(parts) >= 1:
                         input_id = parts[0]
-                        subprocess.run(
-                            ['pactl', 'move-sink-input', input_id, sink_name],
+                        self._run_pactl(
+                            'move-sink-input', input_id, sink_name,
                             capture_output=True
                         )
                         logger.info(f"Moved audio stream {input_id} to {sink_name}")
@@ -632,8 +668,8 @@ class BluetoothSpeakerService:
 
             # Kiểm tra audio sink hiện tại
             current_sink = None
-            sink_result = subprocess.run(
-                ['pactl', 'get-default-sink'],
+            sink_result = self._run_pactl(
+                'get-default-sink',
                 capture_output=True,
                 text=True
             )
@@ -641,8 +677,8 @@ class BluetoothSpeakerService:
                 current_sink = sink_result.stdout.strip()
 
             # Kiểm tra thêm từ PulseAudio
-            pa_sinks_result = subprocess.run(
-                ['pactl', 'list', 'short', 'sinks'],
+            pa_sinks_result = self._run_pactl(
+                'list', 'short', 'sinks',
                 capture_output=True,
                 text=True
             )
@@ -840,17 +876,23 @@ class BluetoothSpeakerService:
         """Start TCP server"""
         # ✅ Set HDMI làm default sink ngay từ đầu
         logger.info("Initializing audio system...")
-        self.set_default_to_audiocodec()
+        hdmi_set_success = self.set_default_to_audiocodec()
 
         # Setup mDNS advertisement
         self.setup_mdns_advertisement()
 
         # Auto-reconnect paired devices sau khi service khởi động
         def delayed_reconnect():
-            # ✅ Đợi lâu hơn để đảm bảo HDMI đã được set
-            # PulseAudio có thể mất tới 45s để khởi động
-            wait_time = 60
-            logger.info(f"=== Will start auto-reconnect after {wait_time}s ===")
+            # ✅ Đợi một chút để đảm bảo system ổn định
+            # Nếu HDMI đã set thành công, chỉ cần đợi 10s
+            # Nếu không, đợi lâu hơn
+            if hdmi_set_success:
+                wait_time = 10
+                logger.info(f"=== HDMI is ready. Will start auto-reconnect after {wait_time}s ===")
+            else:
+                wait_time = 30
+                logger.info(f"=== HDMI not set. Will retry auto-reconnect after {wait_time}s ===")
+
             time.sleep(wait_time)
 
             logger.info("=== Starting auto-reconnect ===")
