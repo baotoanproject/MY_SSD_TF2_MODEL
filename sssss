@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Name=Fix HDMI & Screen Awake
+Comment=Set HDMI audio as default and prevent screen from sleeping
+Exec=sh -c '
+  # Đợi vài giây để hệ thống khởi động ổn định
+  sleep 5;
+  
+  # --- 1. Giữ màn hình luôn sáng ---
+  xset s off;             # tắt screensaver
+  xset -dpms;             # tắt power management
+  xset s noblank;         # không để màn hình trống
+
+  # --- 2. Đặt mặc định âm thanh về HDMI ---
+  HDMI_SINK=$(pactl list short sinks | grep -i hdmi | awk "{print \$2}" | head -n 1);
+  if [ -n "$HDMI_SINK" ]; then
+    pactl set-default-sink "$HDMI_SINK";
+    echo "Set default sink to $HDMI_SINK";
+  else
+    echo "No HDMI sink found";
+  fi
+'
+X-GNOME-Autostart-enabled=true
