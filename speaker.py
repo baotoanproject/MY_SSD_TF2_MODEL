@@ -217,9 +217,9 @@ class BluetoothSpeakerService:
             return False
 
     def set_default_to_audiocodec(self):
-        """Set default sink về HDMI/AudioCodec khi không có Bluetooth"""
+        """Set default sink về HDMI (LUÔN LUÔN ưu tiên HDMI)"""
         try:
-            logger.info("Setting default audio sink back to HDMI/AudioCodec...")
+            logger.info("Setting default audio sink to HDMI (always prioritize HDMI)...")
 
             # Lấy danh sách sinks
             pa_result = subprocess.run(
@@ -230,32 +230,27 @@ class BluetoothSpeakerService:
 
             logger.info(f"Available sinks:\n{pa_result.stdout}")
 
-            # Tìm sink KHÔNG phải Bluetooth (ưu tiên HDMI, sau đó AudioCodec)
+            # Tìm HDMI sink (LUÔN LUÔN ưu tiên HDMI)
             hdmi_sink = None
-            audiocodec_sink = None
 
             for line in pa_result.stdout.split('\n'):
                 if line.strip() and 'bluez' not in line.lower():  # Bỏ qua Bluetooth
                     # Split bằng whitespace
                     # Format: [index] [sink-name] [module] [sample-spec] [state]
-                    # Example: 0    HDMI-Playback    module-alsa-sink.c    s16le 2ch 44100Hz    SUSPENDED
+                    # Example: 1    HDMI-Playback    module-alsa-sink.c    s16le 2ch 44100Hz    SUSPENDED
                     parts = line.split()
                     if len(parts) >= 2:
                         sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
                         logger.debug(f"Checking sink: {sink_name}")
 
-                        # Ưu tiên HDMI
+                        # ✅ LUÔN LUÔN tìm HDMI
                         if 'hdmi' in sink_name.lower():
                             hdmi_sink = sink_name
-                            logger.info(f"Found HDMI sink: {hdmi_sink}")
-                            break
-                        # Fallback sang AudioCodec
-                        elif 'audiocodec' in sink_name.lower() or 'codec' in sink_name.lower():
-                            audiocodec_sink = sink_name
-                            logger.info(f"Found AudioCodec sink: {audiocodec_sink}")
+                            logger.info(f"✅ Found HDMI sink: {hdmi_sink}")
+                            break  # Tìm thấy HDMI thì dừng luôn
 
-            # Chọn sink: ưu tiên HDMI, không có thì AudioCodec
-            default_sink = hdmi_sink or audiocodec_sink
+            # ✅ CHỈ dùng HDMI, KHÔNG dùng AudioCodec
+            default_sink = hdmi_sink
 
             if default_sink:
                 set_result = subprocess.run(
@@ -264,14 +259,24 @@ class BluetoothSpeakerService:
                     text=True
                 )
                 if set_result.returncode == 0:
-                    logger.info(f"✅ Set default audio sink to: {default_sink}")
+                    logger.info(f"✅ Set default audio sink to HDMI: {default_sink}")
                     self.move_all_streams_to_sink(default_sink)
+
+                    # Verify
+                    verify_result = subprocess.run(
+                        ['pactl', 'get-default-sink'],
+                        capture_output=True,
+                        text=True
+                    )
+                    logger.info(f"Verified current default sink: {verify_result.stdout.strip()}")
                     return True
                 else:
-                    logger.error(f"Failed to set default sink: {set_result.stderr}")
+                    logger.error(f"❌ Failed to set HDMI as default sink!")
+                    logger.error(f"Stderr: {set_result.stderr}")
                     return False
             else:
-                logger.warning("Could not find non-Bluetooth sink")
+                logger.error("❌ HDMI sink NOT FOUND! Available sinks:")
+                logger.error(pa_result.stdout)
                 return False
 
         except Exception as e:
