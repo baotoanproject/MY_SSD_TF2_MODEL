@@ -121,12 +121,16 @@ class BluetoothSpeakerService:
                 found_sink = None
                 for line in pa_result.stdout.split('\n'):
                     if line.strip() and 'bluez' in line.lower():
-                        # Split bằng whitespace, sink name là cột đầu tiên
+                        # Split bằng whitespace
+                        # Format: [index] [sink-name] [module] [sample-spec] [state]
+                        # Example: 2    bluez_sink.XX_XX_XX_XX_XX_XX.a2dp_sink    module-bluez5-device.c    ...
                         parts = line.split()
-                        if len(parts) >= 1:
-                            sink_name = parts[0]
+                        if len(parts) >= 2:
+                            sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
+                            logger.debug(f"Checking Bluetooth sink: {sink_name}")
                             if mac_formatted in sink_name or (device_name and device_name.replace(" ", "_") in sink_name):
                                 found_sink = sink_name
+                                logger.info(f"Found matching Bluetooth sink: {found_sink}")
                                 break
 
                 if found_sink:
@@ -181,10 +185,13 @@ class BluetoothSpeakerService:
 
             for line in pa_result.stdout.split('\n'):
                 if line.strip() and 'bluez' not in line.lower():  # Bỏ qua Bluetooth
-                    # Split bằng whitespace, sink name là cột đầu tiên
+                    # Split bằng whitespace
+                    # Format: [index] [sink-name] [module] [sample-spec] [state]
+                    # Example: 0    HDMI-Playback    module-alsa-sink.c    s16le 2ch 44100Hz    SUSPENDED
                     parts = line.split()
-                    if len(parts) >= 1:
-                        sink_name = parts[0]
+                    if len(parts) >= 2:
+                        sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
+                        logger.debug(f"Checking sink: {sink_name}")
 
                         # Ưu tiên HDMI
                         if 'hdmi' in sink_name.lower():
