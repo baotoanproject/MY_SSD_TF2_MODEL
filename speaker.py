@@ -107,7 +107,9 @@ class BluetoothSpeakerService:
 
     def _run_pactl(self, *args, **kwargs):
         """Helper to run pactl commands with correct environment"""
-        kwargs['env'] = self.pulse_env
+        # ✅ Không dùng env từ self.pulse_env nữa
+        # Để pactl tự detect PulseAudio khi chạy trong user session
+        # kwargs['env'] = self.pulse_env
         return subprocess.run(['pactl'] + list(args), **kwargs)
 
     def handle_client(self, client_socket, client_address):
