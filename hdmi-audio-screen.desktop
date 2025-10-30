@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Fix HDMI & Screen
+Exec=/usr/local/bin/fix-hdmi-screen.sh
+X-GNOME-Autostart-enabled=true
