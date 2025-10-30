@@ -115,7 +115,8 @@ class BluetoothSpeakerService:
                     text=True
                 )
 
-                logger.debug(f"Retry {retry+1}/{max_retries}: Available sinks:\n{pa_result.stdout}")
+                logger.info(f"Retry {retry+1}/{max_retries}: Available sinks:\n{pa_result.stdout}")
+                logger.info(f"Looking for MAC: {mac_formatted} (case-insensitive)")
 
                 # Tìm sink của Bluetooth device
                 found_sink = None
@@ -128,13 +129,15 @@ class BluetoothSpeakerService:
                         if len(parts) >= 2:
                             sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
                             logger.debug(f"Checking Bluetooth sink: {sink_name}")
-                            if mac_formatted in sink_name or (device_name and device_name.replace(" ", "_") in sink_name):
+                            # ✅ So sánh case-insensitive
+                            if mac_formatted.lower() in sink_name.lower() or (device_name and device_name.replace(" ", "_").lower() in sink_name.lower()):
                                 found_sink = sink_name
                                 logger.info(f"Found matching Bluetooth sink: {found_sink}")
                                 break
 
                 if found_sink:
                     # Set as default sink
+                    logger.info(f"Attempting to set {found_sink} as default sink...")
                     set_result = subprocess.run(
                         ['pactl', 'set-default-sink', found_sink],
                         capture_output=True,
@@ -146,9 +149,20 @@ class BluetoothSpeakerService:
 
                         # Chuyển tất cả audio streams sang sink mới
                         self.move_all_streams_to_sink(found_sink)
+
+                        # Verify
+                        verify_result = subprocess.run(
+                            ['pactl', 'get-default-sink'],
+                            capture_output=True,
+                            text=True
+                        )
+                        logger.info(f"Current default sink: {verify_result.stdout.strip()}")
                         return True
                     else:
-                        logger.error(f"Failed to set default sink: {set_result.stderr}")
+                        logger.error(f"❌ Failed to set default sink!")
+                        logger.error(f"Return code: {set_result.returncode}")
+                        logger.error(f"Stderr: {set_result.stderr}")
+                        logger.error(f"Stdout: {set_result.stdout}")
                         return False
 
                 # Nếu chưa tìm thấy, đợi một chút
