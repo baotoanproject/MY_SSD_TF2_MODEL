@@ -104,6 +104,7 @@ class BluetoothSpeakerService:
         try:
             mac_formatted = mac_address.replace(":", "_")
             logger.info(f"Setting Bluetooth device {mac_address} as default sink...")
+            logger.info(f"Device name: {device_name}")
 
             # Đợi PulseAudio nhận diện thiết bị
             max_retries = 10
@@ -116,10 +117,12 @@ class BluetoothSpeakerService:
                 )
 
                 logger.info(f"Retry {retry+1}/{max_retries}: Available sinks:\n{pa_result.stdout}")
-                logger.info(f"Looking for MAC: {mac_formatted} (case-insensitive)")
+                logger.info(f"Looking for MAC: {mac_formatted} or device name: {device_name}")
 
                 # Tìm sink của Bluetooth device
                 found_sink = None
+                best_match_score = 0
+
                 for line in pa_result.stdout.split('\n'):
                     if line.strip() and 'bluez' in line.lower():
                         # Split bằng whitespace
@@ -128,14 +131,47 @@ class BluetoothSpeakerService:
                         parts = line.split()
                         if len(parts) >= 2:
                             sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
+                            sink_lower = sink_name.lower()
                             logger.debug(f"Checking Bluetooth sink: {sink_name}")
-                            # ✅ So sánh case-insensitive
-                            if mac_formatted.lower() in sink_name.lower() or (device_name and device_name.replace(" ", "_").lower() in sink_name.lower()):
-                                found_sink = sink_name
-                                logger.info(f"Found matching Bluetooth sink: {found_sink}")
-                                break
 
-                if found_sink:
+                            match_score = 0
+
+                            # ✅ Check 1: MAC address trong sink name (ưu tiên cao nhất)
+                            if mac_formatted.lower() in sink_lower:
+                                match_score = 100
+                                logger.info(f"✅ Match by MAC address: {sink_name}")
+
+                            # ✅ Check 2: Device name trong sink name
+                            elif device_name:
+                                # Thử nhiều format của device name
+                                device_variants = [
+                                    device_name.replace(" ", "_"),
+                                    device_name.replace(" ", "-"),
+                                    device_name.replace("-", "_"),
+                                    device_name  # Giữ nguyên
+                                ]
+                                for variant in device_variants:
+                                    if variant.lower() in sink_lower:
+                                        match_score = 80
+                                        logger.info(f"✅ Match by device name variant '{variant}': {sink_name}")
+                                        break
+
+                            # ✅ Check 3: Chỉ cần có "bluez_sink" và là sink duy nhất
+                            elif 'bluez_sink' in sink_lower or 'bluez_output' in sink_lower:
+                                match_score = 50
+                                logger.info(f"⚠️ Fallback match (bluez sink found): {sink_name}")
+
+                            # Chọn sink có điểm cao nhất
+                            if match_score > best_match_score:
+                                best_match_score = match_score
+                                found_sink = sink_name
+                                logger.info(f"Current best match (score {match_score}): {found_sink}")
+
+                                # Nếu tìm thấy perfect match (MAC address), không cần tìm nữa
+                                if match_score == 100:
+                                    break
+
+                if found_sink and best_match_score >= 50:  # Chỉ chấp nhận match score >= 50
                     # Set as default sink
                     logger.info(f"Attempting to set {found_sink} as default sink...")
                     set_result = subprocess.run(
@@ -165,10 +201,11 @@ class BluetoothSpeakerService:
                         logger.error(f"Stdout: {set_result.stdout}")
                         return False
 
-                # Nếu chưa tìm thấy, đợi một chút
-                if retry < max_retries - 1:
-                    logger.info(f"Waiting for PulseAudio to register Bluetooth sink... ({retry+1}/{max_retries})")
-                    time.sleep(2)
+                # Nếu chưa tìm thấy hoặc match score thấp, đợi một chút
+                elif not found_sink or best_match_score < 50:
+                    if retry < max_retries - 1:
+                        logger.info(f"No suitable Bluetooth sink found yet (best score: {best_match_score}). Waiting... ({retry+1}/{max_retries})")
+                        time.sleep(2)
 
             logger.warning(f"Could not find PulseAudio sink for device {mac_address} after {max_retries} retries")
             # Không set gì, giữ nguyên default hiện tại (HDMI)
