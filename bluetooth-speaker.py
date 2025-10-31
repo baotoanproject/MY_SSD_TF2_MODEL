@@ -12,6 +12,7 @@ import threading
 import logging
 import time
 import os
+from datetime import datetime
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +27,10 @@ class BluetoothSpeakerService:
         self.connected_speakers = []
         self.clients = []
         self.server_socket = None
+        self.monitoring_enabled = True
+        self.last_known_devices = {}  # Track device states
+        self.monitoring_thread = None
+        self.reconnect_attempts = {}  # Track reconnection attempts
 
     def handle_client(self, client_socket, client_address):
         """Xử lý kết nối từ client"""
@@ -217,50 +222,28 @@ class BluetoothSpeakerService:
             return False
 
     def set_default_to_audiocodec(self):
-        """Set default sink về HDMI (LUÔN LUÔN ưu tiên HDMI)"""
+        """Set default sink về HDMI (sử dụng logic giống .desktop file)"""
         try:
-            logger.info("Setting default audio sink to HDMI (always prioritize HDMI)...")
+            logger.info("Setting default audio sink to HDMI...")
 
-            # Lấy danh sách sinks
-            pa_result = subprocess.run(
-                ['pactl', 'list', 'short', 'sinks'],
-                capture_output=True,
-                text=True
-            )
+            # Sử dụng logic giống .desktop file
+            result = subprocess.run([
+                'sh', '-c',
+                'pactl list short sinks | grep -i hdmi | awk "{print $2}" | head -n 1'
+            ], capture_output=True, text=True)
 
-            logger.info(f"Available sinks:\n{pa_result.stdout}")
+            hdmi_sink = result.stdout.strip()
 
-            # Tìm HDMI sink (LUÔN LUÔN ưu tiên HDMI)
-            hdmi_sink = None
-
-            for line in pa_result.stdout.split('\n'):
-                if line.strip() and 'bluez' not in line.lower():  # Bỏ qua Bluetooth
-                    # Split bằng whitespace
-                    # Format: [index] [sink-name] [module] [sample-spec] [state]
-                    # Example: 1    HDMI-Playback    module-alsa-sink.c    s16le 2ch 44100Hz    SUSPENDED
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
-                        logger.debug(f"Checking sink: {sink_name}")
-
-                        # ✅ LUÔN LUÔN tìm HDMI
-                        if 'hdmi' in sink_name.lower():
-                            hdmi_sink = sink_name
-                            logger.info(f"✅ Found HDMI sink: {hdmi_sink}")
-                            break  # Tìm thấy HDMI thì dừng luôn
-
-            # ✅ CHỈ dùng HDMI, KHÔNG dùng AudioCodec
-            default_sink = hdmi_sink
-
-            if default_sink:
+            if hdmi_sink:
                 set_result = subprocess.run(
-                    ['pactl', 'set-default-sink', default_sink],
+                    ['pactl', 'set-default-sink', hdmi_sink],
                     capture_output=True,
                     text=True
                 )
+
                 if set_result.returncode == 0:
-                    logger.info(f"✅ Set default audio sink to HDMI: {default_sink}")
-                    self.move_all_streams_to_sink(default_sink)
+                    logger.info(f"✅ Set default audio sink to HDMI: {hdmi_sink}")
+                    self.move_all_streams_to_sink(hdmi_sink)
 
                     # Verify
                     verify_result = subprocess.run(
@@ -271,12 +254,10 @@ class BluetoothSpeakerService:
                     logger.info(f"Verified current default sink: {verify_result.stdout.strip()}")
                     return True
                 else:
-                    logger.error(f"❌ Failed to set HDMI as default sink!")
-                    logger.error(f"Stderr: {set_result.stderr}")
+                    logger.error(f"❌ Failed to set HDMI as default sink: {set_result.stderr}")
                     return False
             else:
-                logger.error("❌ HDMI sink NOT FOUND! Available sinks:")
-                logger.error(pa_result.stdout)
+                logger.error("❌ No HDMI sink found")
                 return False
 
         except Exception as e:
@@ -792,10 +773,24 @@ class BluetoothSpeakerService:
                             logger.info(f"Already connected: {name}")
                             # Nếu đã kết nối và là audio device, đảm bảo nó là default sink
                             if is_audio_device:
-                                logger.info(f"Ensuring {name} is set as default audio sink...")
+                                logger.info(f"Device {name} already connected by system - ensuring it's set as default audio sink...")
+
+                                # Đợi thêm chút để PulseAudio ổn định
+                                time.sleep(2)
+
+                                # Force set làm default sink (quan trọng cho race condition)
                                 if self.set_bluetooth_as_default_sink(mac, name):
                                     audio_devices_reconnected.append(name)
-                                    logger.info(f"✅ {name} is confirmed as default audio sink")
+                                    logger.info(f"✅ {name} is now confirmed as default audio sink")
+                                else:
+                                    logger.warning(f"⚠️ Could not set {name} as default sink, will retry...")
+                                    # Retry một lần nữa
+                                    time.sleep(1)
+                                    if self.set_bluetooth_as_default_sink(mac, name):
+                                        audio_devices_reconnected.append(name)
+                                        logger.info(f"✅ {name} set as default sink on retry")
+                                    else:
+                                        logger.error(f"❌ Failed to set {name} as default sink after retry")
 
             # Nếu không reconnect được thiết bị audio nào, set về HDMI
             if not audio_devices_reconnected:
@@ -811,11 +806,184 @@ class BluetoothSpeakerService:
         except Exception as e:
             logger.error(f"Error in auto-reconnect: {e}")
 
+    def get_current_device_states(self):
+        """Lấy trạng thái hiện tại của tất cả paired devices"""
+        try:
+            device_states = {}
+
+            # Lấy danh sách paired devices
+            paired_result = subprocess.run(
+                ['bluetoothctl', 'paired-devices'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            for line in paired_result.stdout.split('\n'):
+                if line.strip() and 'Device' in line:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        mac = parts[1]
+                        name = ' '.join(parts[2:])
+
+                        # Lấy thông tin chi tiết
+                        info_result = subprocess.run(
+                            ['bluetoothctl', 'info', mac],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+
+                        is_connected = 'Connected: yes' in info_result.stdout
+                        is_audio_device = ('Audio Sink' in info_result.stdout or
+                                         'Audio Source' in info_result.stdout or
+                                         'A2DP' in info_result.stdout or
+                                         'Headset' in info_result.stdout)
+
+                        device_states[mac] = {
+                            'name': name,
+                            'connected': is_connected,
+                            'is_audio': is_audio_device,
+                            'last_seen': datetime.now() if is_connected else None
+                        }
+
+            return device_states
+        except Exception as e:
+            logger.error(f"Error getting device states: {e}")
+            return {}
+
+    def continuous_monitoring(self):
+        """Continuous monitoring thread cho battery-powered devices"""
+        logger.info("🔄 Starting continuous Bluetooth monitoring...")
+
+        # Đợi initial setup hoàn thành
+        time.sleep(15)
+
+        while self.monitoring_enabled:
+            try:
+                current_states = self.get_current_device_states()
+
+                # So sánh với trạng thái trước đó
+                for mac, current_state in current_states.items():
+                    if mac in self.last_known_devices:
+                        last_state = self.last_known_devices[mac]
+
+                        # Detect disconnection của audio device
+                        if (last_state['connected'] and not current_state['connected'] and
+                            current_state['is_audio']):
+                            logger.info(f"🔋 Detected audio device disconnection: {current_state['name']} ({mac})")
+
+                            # Set HDMI khi audio device disconnect
+                            self.set_default_to_audiocodec()
+
+                            # Broadcast disconnect event tới clients
+                            self.broadcast_response({
+                                'action': 'device_disconnected',
+                                'mac_address': mac,
+                                'device_name': current_state['name'],
+                                'reason': 'monitoring_detected'
+                            })
+
+                        # Detect reconnection của audio device
+                        elif (not last_state['connected'] and current_state['connected'] and
+                              current_state['is_audio']):
+                            logger.info(f"🔌 Detected audio device reconnection: {current_state['name']} ({mac})")
+
+                            # Đợi PulseAudio ổn định
+                            time.sleep(3)
+
+                            # Set làm default audio sink
+                            if self.set_bluetooth_as_default_sink(mac, current_state['name']):
+                                logger.info(f"✅ Auto-set {current_state['name']} as default audio sink")
+
+                                # Broadcast reconnect event tới clients
+                                self.broadcast_response({
+                                    'action': 'device_reconnected',
+                                    'mac_address': mac,
+                                    'device_name': current_state['name'],
+                                    'reason': 'monitoring_detected'
+                                })
+                            else:
+                                logger.warning(f"⚠️ Could not set {current_state['name']} as default sink")
+
+                # Update last known states
+                self.last_known_devices = current_states.copy()
+
+                # Check cho devices missing (để attempt reconnect)
+                self.check_missing_devices(current_states)
+
+                # Đợi 10 giây trước lần check tiếp theo
+                time.sleep(10)
+
+            except Exception as e:
+                logger.error(f"Error in continuous monitoring: {e}")
+                time.sleep(60)  # Đợi lâu hơn nếu có lỗi
+
+    def check_missing_devices(self, current_states):
+        """Check và attempt reconnect devices bị missing"""
+        try:
+            for mac, state in current_states.items():
+                if state['is_audio'] and not state['connected']:
+                    # Check xem đã attempt reconnect gần đây chưa
+                    now = datetime.now()
+                    last_attempt = self.reconnect_attempts.get(mac)
+
+                    # Chỉ attempt reconnect mỗi 2 phút
+                    if not last_attempt or (now - last_attempt).seconds > 120:
+                        logger.info(f"🔄 Attempting auto-reconnect to {state['name']} ({mac})")
+                        self.reconnect_attempts[mac] = now
+
+                        # Attempt reconnect in background
+                        threading.Thread(
+                            target=self.attempt_device_reconnect,
+                            args=(mac, state['name']),
+                            daemon=True
+                        ).start()
+
+        except Exception as e:
+            logger.error(f"Error checking missing devices: {e}")
+
+    def attempt_device_reconnect(self, mac, name):
+        """Attempt reconnect một device specific"""
+        try:
+            logger.info(f"🔗 Trying to reconnect {name} ({mac})...")
+
+            # Trust device
+            subprocess.run(['bluetoothctl', 'trust', mac],
+                         capture_output=True, timeout=10)
+
+            # Attempt connect
+            connect_result = subprocess.run(
+                ['bluetoothctl', 'connect', mac],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+
+            if connect_result.returncode == 0 or 'Connection successful' in connect_result.stdout:
+                logger.info(f"✅ Successfully reconnected {name}")
+
+                # Đợi rồi set audio sink
+                time.sleep(2)
+                if self.set_bluetooth_as_default_sink(mac, name):
+                    logger.info(f"✅ {name} set as default audio sink")
+
+                    # Broadcast success
+                    self.broadcast_response({
+                        'action': 'auto_reconnect_success',
+                        'mac_address': mac,
+                        'device_name': name
+                    })
+            else:
+                logger.debug(f"❌ Failed to reconnect {name}: {connect_result.stderr}")
+
+        except Exception as e:
+            logger.error(f"Error attempting reconnect {name}: {e}")
+
     def start_server(self):
         """Start TCP server"""
-        # ✅ Set HDMI làm default sink ngay từ đầu
-        logger.info("Initializing audio system...")
-        self.set_default_to_audiocodec()
+        # Skip HDMI init - đã có .desktop file xử lý khi boot
+        logger.info("Skipping HDMI init (handled by .desktop autostart)")
 
         # Setup mDNS advertisement
         self.setup_mdns_advertisement()
@@ -831,6 +999,11 @@ class BluetoothSpeakerService:
             logger.info("Auto-reconnect completed")
 
         threading.Thread(target=delayed_reconnect, daemon=True).start()
+
+        # Start continuous monitoring thread
+        self.monitoring_thread = threading.Thread(target=self.continuous_monitoring, daemon=True)
+        self.monitoring_thread.start()
+        logger.info("🔄 Continuous monitoring thread started")
 
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -858,6 +1031,12 @@ class BluetoothSpeakerService:
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
+            # Stop monitoring
+            self.monitoring_enabled = False
+            if self.monitoring_thread and self.monitoring_thread.is_alive():
+                logger.info("Stopping monitoring thread...")
+                self.monitoring_thread.join(timeout=5)
+
             if self.server_socket:
                 self.server_socket.close()
 
@@ -867,4 +1046,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
