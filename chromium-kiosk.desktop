@@ -2,5 +2,6 @@
 Type=Application
 Name=Chromium Kiosk
 Comment=Launch Chromium in kiosk mode
-Exec=/usr/bin/chromium-browser --kiosk --noerrdialogs --disable-infobars --incognito --autoplay-policy=no-user-gesture-required --disable-features=TranslateUI --no-sandbox --enable-gpu-rasterization --enable-oop-rasterization --enable-zero-copy --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --force-gpu-mem-available-mb=64 --max_old_space_size=512 https://wb.wayfindy.com
+Exec=/usr/bin/chromium-browser --no-first-run --user-data-dir=/home/orangepi/chromium-profile --kiosk --noerrdialogs --disable-infobars --autoplay-policy=no-user-gesture-required https://wb.wayfindy.com
 X-GNOME-Autostart-enabled=true
+
