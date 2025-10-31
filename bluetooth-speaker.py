@@ -118,16 +118,6 @@ class BluetoothSpeakerService:
             max_retries = 5
 
             for retry in range(max_retries):
-                logger.info(f"Attempt {retry + 1}/{max_retries}: Looking for Bluetooth sink...")
-
-                # Show all available sinks for debug
-                all_sinks = subprocess.run(
-                    ['pactl', 'list', 'short', 'sinks'],
-                    capture_output=True,
-                    text=True
-                )
-                logger.info(f"All available sinks:\n{all_sinks.stdout}")
-
                 # Sử dụng logic đơn giản giống HDMI
                 result = subprocess.run([
                     'sh', '-c',
@@ -135,12 +125,11 @@ class BluetoothSpeakerService:
                 ], capture_output=True, text=True)
 
                 bluetooth_sink = result.stdout.strip()
-                logger.info(f"Found Bluetooth sink: '{bluetooth_sink}'")
 
                 if bluetooth_sink:
+                    logger.info(f"Found Bluetooth sink: '{bluetooth_sink}'")
                     break
                 elif retry < max_retries - 1:
-                    logger.info(f"No Bluetooth sink found yet, waiting 3s...")
                     time.sleep(3)
 
             if bluetooth_sink:
@@ -152,20 +141,32 @@ class BluetoothSpeakerService:
                 )
                 logger.info(f"Current default sink: {current_default.stdout.strip()}")
 
-                # Set as default
-                set_result = subprocess.run(
+                # Set as default sink (for output/speakers)
+                set_sink_result = subprocess.run(
                     ['pactl', 'set-default-sink', bluetooth_sink],
                     capture_output=True,
                     text=True
                 )
 
-                if set_result.returncode == 0:
+                if set_sink_result.returncode == 0:
                     logger.info(f"✅ Successfully set Bluetooth as default audio sink: {bluetooth_sink}")
 
                     # Move all streams
                     self.move_all_streams_to_sink(bluetooth_sink)
 
-                    # Verify
+                    # Also try to set as default source if it exists (for microphone)
+                    source_result = subprocess.run([
+                        'sh', '-c',
+                        'pactl list short sources | grep -i bluez | awk "{print $2}" | head -n 1'
+                    ], capture_output=True, text=True)
+
+                    bluetooth_source = source_result.stdout.strip()
+                    if bluetooth_source:
+                        logger.info(f"Found Bluetooth source: '{bluetooth_source}'")
+                        subprocess.run(['pactl', 'set-default-source', bluetooth_source])
+                        logger.info(f"✅ Also set Bluetooth as default source: {bluetooth_source}")
+
+                    # Verify sink
                     verify_result = subprocess.run(
                         ['pactl', 'get-default-sink'],
                         capture_output=True,
@@ -174,19 +175,11 @@ class BluetoothSpeakerService:
                     logger.info(f"Verified new default sink: {verify_result.stdout.strip()}")
                     return True
                 else:
-                    logger.error(f"❌ Failed to set Bluetooth as default sink: {set_result.stderr}")
-                    logger.error(f"Command output: {set_result.stdout}")
+                    logger.error(f"❌ Failed to set Bluetooth as default sink: {set_sink_result.stderr}")
+                    logger.error(f"Command output: {set_sink_result.stdout}")
                     return False
             else:
-                logger.warning("⚠️ No Bluetooth sink found")
-
-                # Debug: Show all available sinks
-                all_sinks = subprocess.run(
-                    ['pactl', 'list', 'short', 'sinks'],
-                    capture_output=True,
-                    text=True
-                )
-                logger.debug(f"Available sinks:\n{all_sinks.stdout}")
+                logger.warning("⚠️ No Bluetooth sink found after retries")
                 return False
 
         except Exception as e:
