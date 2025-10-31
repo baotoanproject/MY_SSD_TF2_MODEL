@@ -2,7 +2,8 @@
 Type=Application
 Name=Chromium Kiosk
 Comment=Launch Chromium in kiosk mode
-Exec=/usr/bin/chromium --no-first-run --user-data-dir=/home/orangepi/chromium-profile --kiosk --noerrdialogs --disable-infobars --autoplay-policy=no-user-gesture-required https://wb.wayfindy.com
+Exec=/usr/bin/chromium --no-first-run --no-sandbox --kiosk --noerrdialogs --disable-infobars --autoplay-policy=no-user-gesture-required https://wb.wayfindy.com
 X-GNOME-Autostart-enabled=true
+
 
 
