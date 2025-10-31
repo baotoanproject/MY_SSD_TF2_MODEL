@@ -34,7 +34,6 @@ class BluetoothSpeakerService:
 
     def handle_client(self, client_socket, client_address):
         """Xử lý kết nối từ client"""
-        logger.info(f"Client connected from {client_address}")
         self.clients.append(client_socket)
 
         try:
@@ -45,7 +44,6 @@ class BluetoothSpeakerService:
 
                 try:
                     command = json.loads(data.decode())
-                    logger.info(f"Received command: {command}")
 
                     if command.get('action') == 'ping':
                         # Respond to ping for device discovery
@@ -85,7 +83,6 @@ class BluetoothSpeakerService:
             if client_socket in self.clients:
                 self.clients.remove(client_socket)
             client_socket.close()
-            logger.info(f"Client {client_address} disconnected")
 
     def send_response(self, client_socket, response):
         """Gửi response về client"""
@@ -256,7 +253,6 @@ class BluetoothSpeakerService:
     def scan_bluetooth_speakers(self, client_socket):
         """Scan và tìm loa Bluetooth"""
         try:
-            logger.info("Scanning for Bluetooth speakers...")
 
             # Đảm bảo Bluetooth đã bật
             subprocess.run(['bluetoothctl', 'power', 'on'], capture_output=True)
@@ -267,13 +263,11 @@ class BluetoothSpeakerService:
             subprocess.run(['bluetoothctl', 'discoverable', 'on'], capture_output=True)
             subprocess.run(['bluetoothctl', 'pairable', 'on'], capture_output=True)
 
-            logger.info("Starting scan without disconnecting existing devices...")
 
             # Dừng scan cũ nếu có
             subprocess.run(['bluetoothctl', 'scan', 'off'], capture_output=True)
 
             # Bắt đầu scan mới
-            logger.info("Starting Bluetooth scan...")
             scan_proc = subprocess.Popen(
                 ['bluetoothctl', 'scan', 'on'],
                 stdout=subprocess.PIPE,
@@ -310,7 +304,6 @@ class BluetoothSpeakerService:
                             text=True
                         )
 
-                        logger.info(f"Found device: {name} ({mac})")
 
                         # Lấy thông tin cơ bản
                         device_type = 'unknown'
@@ -347,7 +340,6 @@ class BluetoothSpeakerService:
     def connect_speaker(self, mac_address, client_socket):
         """Kết nối tới loa Bluetooth"""
         try:
-            logger.info(f"Connecting to speaker: {mac_address}")
 
             # Lấy tên thiết bị trước
             device_name = None
@@ -397,7 +389,6 @@ class BluetoothSpeakerService:
                     'device_name': device_name
                 }
                 self.send_response(client_socket, response)
-                logger.info(f"Successfully connected to {device_name} ({mac_address})")
             else:
                 response = {
                     'action': 'connect_result',
@@ -426,7 +417,6 @@ class BluetoothSpeakerService:
     def disconnect_speaker(self, mac_address, client_socket):
         """Ngắt kết nối loa Bluetooth"""
         try:
-            logger.info(f"Disconnecting speaker: {mac_address}")
 
             result = subprocess.run(
                 ['bluetoothctl', 'disconnect', mac_address],
@@ -447,7 +437,6 @@ class BluetoothSpeakerService:
                     'mac_address': mac_address
                 }
                 self.send_response(client_socket, response)
-                logger.info(f"Disconnected from {mac_address}")
             else:
                 response = {
                     'action': 'disconnect_result',
@@ -478,7 +467,6 @@ class BluetoothSpeakerService:
                 capture_output=True,
                 text=True
             )
-            logger.info(f"All devices output: {all_devices_result.stdout}")
 
             # Lấy danh sách paired devices
             paired_result = subprocess.run(
@@ -486,7 +474,6 @@ class BluetoothSpeakerService:
                 capture_output=True,
                 text=True
             )
-            logger.info(f"Paired devices output: {paired_result.stdout}")
 
             # Xử lý tất cả devices
             for line in all_devices_result.stdout.split('\n'):
@@ -503,7 +490,6 @@ class BluetoothSpeakerService:
                             text=True
                         )
 
-                        logger.info(f"=== Device: {name} ({mac}) ===")
                         logger.debug(f"Info output: {info_result.stdout}")
 
                         is_connected = 'Connected: yes' in info_result.stdout
@@ -521,7 +507,6 @@ class BluetoothSpeakerService:
                         elif 'Phone' in info_result.stdout:
                             device_type = 'phone'
 
-                        logger.info(f"Device: {name} - Connected: {is_connected}, Paired: {is_paired}, Type: {device_type}")
 
                         # Lấy thêm thông tin battery nếu có
                         battery_level = None
@@ -581,7 +566,6 @@ class BluetoothSpeakerService:
             }
 
             self.send_response(client_socket, response)
-            logger.info(f"Found {len(connected_devices)} connected, {len(all_paired_devices)} paired, {len(all_devices)} total devices")
 
         except Exception as e:
             logger.error(f"Error listing speakers: {e}")
@@ -613,7 +597,6 @@ class BluetoothSpeakerService:
             if os.path.exists(service_dir):
                 with open(service_file, 'w') as f:
                     f.write(service_content)
-                logger.info("mDNS service advertisement created")
 
                 # Restart avahi để load service mới
                 try:
@@ -629,7 +612,6 @@ class BluetoothSpeakerService:
     def auto_reconnect_paired_devices(self):
         """Tự động kết nối lại thiết bị đã pair sau khi reboot"""
         try:
-            logger.info("Auto-reconnecting devices after reboot...")
 
             # Đảm bảo Bluetooth đã sẵn sàng
             subprocess.run(['bluetoothctl', 'power', 'on'], capture_output=True)
@@ -653,7 +635,6 @@ class BluetoothSpeakerService:
                 text=True
             )
 
-            logger.info(f"All devices: {all_devices_result.stdout}")
             logger.info(f"Paired devices: {paired_result.stdout}")
 
             reconnected_count = 0
