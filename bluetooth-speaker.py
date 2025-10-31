@@ -110,17 +110,38 @@ class BluetoothSpeakerService:
             logger.info(f"🎵 Attempting to set Bluetooth device as default sink...")
             logger.info(f"Device: {device_name} ({mac_address})")
 
-            # Đợi PulseAudio ổn định
-            time.sleep(3)
+            # Đợi PulseAudio ổn định và nhận diện thiết bị
+            time.sleep(5)
 
-            # Sử dụng logic đơn giản giống HDMI
-            result = subprocess.run([
-                'sh', '-c',
-                'pactl list short sinks | grep -i bluez | awk "{print $2}" | head -n 1'
-            ], capture_output=True, text=True)
+            # Retry mechanism để đợi Bluetooth sink xuất hiện
+            bluetooth_sink = None
+            max_retries = 5
 
-            bluetooth_sink = result.stdout.strip()
-            logger.info(f"Found Bluetooth sink: '{bluetooth_sink}'")
+            for retry in range(max_retries):
+                logger.info(f"Attempt {retry + 1}/{max_retries}: Looking for Bluetooth sink...")
+
+                # Show all available sinks for debug
+                all_sinks = subprocess.run(
+                    ['pactl', 'list', 'short', 'sinks'],
+                    capture_output=True,
+                    text=True
+                )
+                logger.info(f"All available sinks:\n{all_sinks.stdout}")
+
+                # Sử dụng logic đơn giản giống HDMI
+                result = subprocess.run([
+                    'sh', '-c',
+                    'pactl list short sinks | grep -i bluez | awk "{print $2}" | head -n 1'
+                ], capture_output=True, text=True)
+
+                bluetooth_sink = result.stdout.strip()
+                logger.info(f"Found Bluetooth sink: '{bluetooth_sink}'")
+
+                if bluetooth_sink:
+                    break
+                elif retry < max_retries - 1:
+                    logger.info(f"No Bluetooth sink found yet, waiting 3s...")
+                    time.sleep(3)
 
             if bluetooth_sink:
                 # Check current default
