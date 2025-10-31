@@ -153,6 +153,10 @@ class BluetoothSpeakerService:
 
                         if set_result.returncode == 0:
                             logger.info(f"✅ Set Bluetooth sink: {bluetooth_sink}")
+
+                            # Unsuspend Bluetooth sink để đảm bảo active
+                            subprocess.run(['pacmd', 'suspend-sink', bluetooth_sink, '0'], capture_output=True)
+
                             self.move_all_streams_to_sink(bluetooth_sink)
                             return True
 
@@ -207,6 +211,10 @@ class BluetoothSpeakerService:
 
                 if set_result.returncode == 0:
                     logger.info(f"✅ Successfully changed default audio sink to HDMI: {hdmi_sink}")
+
+                    # Unsuspend HDMI sink để đảm bảo active
+                    subprocess.run(['pacmd', 'suspend-sink', hdmi_sink, '0'], capture_output=True)
+
                     self.move_all_streams_to_sink(hdmi_sink)
 
                     # Verify
