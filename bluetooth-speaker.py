@@ -105,20 +105,18 @@ class BluetoothSpeakerService:
                     self.clients.remove(client)
 
     def set_bluetooth_as_default_sink(self, mac_address, device_name=None):
-        """Set Bluetooth device làm default audio sink trong PulseAudio (simplified)"""
+        """Set Bluetooth device làm default audio sink trong PulseAudio"""
         try:
-            logger.info(f"🎵 Attempting to set Bluetooth device as default sink...")
-            logger.info(f"Device: {device_name} ({mac_address})")
-
-            # Đợi PulseAudio ổn định và nhận diện thiết bị
             time.sleep(5)
 
-            # Retry mechanism để đợi Bluetooth sink xuất hiện
-            bluetooth_sink = None
-            max_retries = 5
+            # Force create Bluetooth sink if needed
+            subprocess.run([
+                'pactl', 'load-module', 'module-bluetooth-discover'
+            ], capture_output=True)
 
-            for retry in range(max_retries):
-                # Sử dụng logic đơn giản giống HDMI
+            # Wait and try multiple approaches
+            for retry in range(5):
+                # Method 1: Simple grep
                 result = subprocess.run([
                     'sh', '-c',
                     'pactl list short sinks | grep -i bluez | awk "{print $2}" | head -n 1'
@@ -126,64 +124,31 @@ class BluetoothSpeakerService:
 
                 bluetooth_sink = result.stdout.strip()
 
-                if bluetooth_sink:
-                    logger.info(f"Found Bluetooth sink: '{bluetooth_sink}'")
-                    break
-                elif retry < max_retries - 1:
-                    time.sleep(3)
-
-            if bluetooth_sink:
-                # Check current default
-                current_default = subprocess.run(
-                    ['pactl', 'get-default-sink'],
-                    capture_output=True,
-                    text=True
-                )
-                logger.info(f"Current default sink: {current_default.stdout.strip()}")
-
-                # Set as default sink (for output/speakers)
-                set_sink_result = subprocess.run(
-                    ['pactl', 'set-default-sink', bluetooth_sink],
-                    capture_output=True,
-                    text=True
-                )
-
-                if set_sink_result.returncode == 0:
-                    logger.info(f"✅ Successfully set Bluetooth as default audio sink: {bluetooth_sink}")
-
-                    # Move all streams
-                    self.move_all_streams_to_sink(bluetooth_sink)
-
-                    # Also try to set as default source if it exists (for microphone)
-                    source_result = subprocess.run([
+                if not bluetooth_sink:
+                    # Method 2: Try with MAC address
+                    mac_formatted = mac_address.replace(":", "_")
+                    result = subprocess.run([
                         'sh', '-c',
-                        'pactl list short sources | grep -i bluez | awk "{print $2}" | head -n 1'
+                        f'pactl list short sinks | grep -i {mac_formatted} | awk "{{print $2}}" | head -n 1'
                     ], capture_output=True, text=True)
+                    bluetooth_sink = result.stdout.strip()
 
-                    bluetooth_source = source_result.stdout.strip()
-                    if bluetooth_source:
-                        logger.info(f"Found Bluetooth source: '{bluetooth_source}'")
-                        subprocess.run(['pactl', 'set-default-source', bluetooth_source])
-                        logger.info(f"✅ Also set Bluetooth as default source: {bluetooth_source}")
+                if bluetooth_sink:
+                    # Set as default - force with explicit profile
+                    subprocess.run(['pactl', 'set-card-profile', 'bluez_card.' + mac_address.replace(":", "_"), 'a2dp_sink'], capture_output=True)
 
-                    # Verify sink
-                    verify_result = subprocess.run(
-                        ['pactl', 'get-default-sink'],
-                        capture_output=True,
-                        text=True
-                    )
-                    logger.info(f"Verified new default sink: {verify_result.stdout.strip()}")
-                    return True
-                else:
-                    logger.error(f"❌ Failed to set Bluetooth as default sink: {set_sink_result.stderr}")
-                    logger.error(f"Command output: {set_sink_result.stdout}")
-                    return False
-            else:
-                logger.warning("⚠️ No Bluetooth sink found after retries")
-                return False
+                    set_result = subprocess.run(['pactl', 'set-default-sink', bluetooth_sink])
+
+                    if set_result.returncode == 0:
+                        logger.info(f"✅ Set Bluetooth sink: {bluetooth_sink}")
+                        self.move_all_streams_to_sink(bluetooth_sink)
+                        return True
+
+                time.sleep(2)
+
+            return False
 
         except Exception as e:
-            logger.error(f"Error setting Bluetooth sink: {e}")
             return False
 
     def set_default_to_audiocodec(self):
