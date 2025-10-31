@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Bluetooth Speaker Service for OrangePi Zero3
@@ -106,120 +105,71 @@ class BluetoothSpeakerService:
                     self.clients.remove(client)
 
     def set_bluetooth_as_default_sink(self, mac_address, device_name=None):
-        """Set Bluetooth device làm default audio sink trong PulseAudio"""
+        """Set Bluetooth device làm default audio sink trong PulseAudio (simplified)"""
         try:
-            mac_formatted = mac_address.replace(":", "_")
-            logger.info(f"Setting Bluetooth device {mac_address} as default sink...")
-            logger.info(f"Device name: {device_name}")
+            logger.info(f"🎵 Attempting to set Bluetooth device as default sink...")
+            logger.info(f"Device: {device_name} ({mac_address})")
 
-            # Đợi PulseAudio nhận diện thiết bị
-            max_retries = 10
-            for retry in range(max_retries):
-                # Lấy danh sách sinks
-                pa_result = subprocess.run(
-                    ['pactl', 'list', 'short', 'sinks'],
+            # Đợi PulseAudio ổn định
+            time.sleep(3)
+
+            # Sử dụng logic đơn giản giống HDMI
+            result = subprocess.run([
+                'sh', '-c',
+                'pactl list short sinks | grep -i bluez | awk "{print $2}" | head -n 1'
+            ], capture_output=True, text=True)
+
+            bluetooth_sink = result.stdout.strip()
+            logger.info(f"Found Bluetooth sink: '{bluetooth_sink}'")
+
+            if bluetooth_sink:
+                # Check current default
+                current_default = subprocess.run(
+                    ['pactl', 'get-default-sink'],
+                    capture_output=True,
+                    text=True
+                )
+                logger.info(f"Current default sink: {current_default.stdout.strip()}")
+
+                # Set as default
+                set_result = subprocess.run(
+                    ['pactl', 'set-default-sink', bluetooth_sink],
                     capture_output=True,
                     text=True
                 )
 
-                logger.info(f"Retry {retry+1}/{max_retries}: Available sinks:\n{pa_result.stdout}")
-                logger.info(f"Looking for MAC: {mac_formatted} or device name: {device_name}")
+                if set_result.returncode == 0:
+                    logger.info(f"✅ Successfully set Bluetooth as default audio sink: {bluetooth_sink}")
 
-                # Tìm sink của Bluetooth device
-                found_sink = None
-                best_match_score = 0
+                    # Move all streams
+                    self.move_all_streams_to_sink(bluetooth_sink)
 
-                for line in pa_result.stdout.split('\n'):
-                    if line.strip() and 'bluez' in line.lower():
-                        # Split bằng whitespace
-                        # Format: [index] [sink-name] [module] [sample-spec] [state]
-                        # Example: 2    bluez_sink.XX_XX_XX_XX_XX_XX.a2dp_sink    module-bluez5-device.c    ...
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            sink_name = parts[1]  # ✅ Cột thứ 2 là sink name
-                            sink_lower = sink_name.lower()
-                            logger.debug(f"Checking Bluetooth sink: {sink_name}")
-
-                            match_score = 0
-
-                            # ✅ Check 1: MAC address trong sink name (ưu tiên cao nhất)
-                            if mac_formatted.lower() in sink_lower:
-                                match_score = 100
-                                logger.info(f"✅ Match by MAC address: {sink_name}")
-
-                            # ✅ Check 2: Device name trong sink name
-                            elif device_name:
-                                # Thử nhiều format của device name
-                                device_variants = [
-                                    device_name.replace(" ", "_"),
-                                    device_name.replace(" ", "-"),
-                                    device_name.replace("-", "_"),
-                                    device_name  # Giữ nguyên
-                                ]
-                                for variant in device_variants:
-                                    if variant.lower() in sink_lower:
-                                        match_score = 80
-                                        logger.info(f"✅ Match by device name variant '{variant}': {sink_name}")
-                                        break
-
-                            # ✅ Check 3: Chỉ cần có "bluez_sink" và là sink duy nhất
-                            elif 'bluez_sink' in sink_lower or 'bluez_output' in sink_lower:
-                                match_score = 50
-                                logger.info(f"⚠️ Fallback match (bluez sink found): {sink_name}")
-
-                            # Chọn sink có điểm cao nhất
-                            if match_score > best_match_score:
-                                best_match_score = match_score
-                                found_sink = sink_name
-                                logger.info(f"Current best match (score {match_score}): {found_sink}")
-
-                                # Nếu tìm thấy perfect match (MAC address), không cần tìm nữa
-                                if match_score == 100:
-                                    break
-
-                if found_sink and best_match_score >= 50:  # Chỉ chấp nhận match score >= 50
-                    # Set as default sink
-                    logger.info(f"Attempting to set {found_sink} as default sink...")
-                    set_result = subprocess.run(
-                        ['pactl', 'set-default-sink', found_sink],
+                    # Verify
+                    verify_result = subprocess.run(
+                        ['pactl', 'get-default-sink'],
                         capture_output=True,
                         text=True
                     )
+                    logger.info(f"Verified new default sink: {verify_result.stdout.strip()}")
+                    return True
+                else:
+                    logger.error(f"❌ Failed to set Bluetooth as default sink: {set_result.stderr}")
+                    logger.error(f"Command output: {set_result.stdout}")
+                    return False
+            else:
+                logger.warning("⚠️ No Bluetooth sink found")
 
-                    if set_result.returncode == 0:
-                        logger.info(f"✅ Successfully set {found_sink} as default audio sink")
-
-                        # Chuyển tất cả audio streams sang sink mới
-                        self.move_all_streams_to_sink(found_sink)
-
-                        # Verify
-                        verify_result = subprocess.run(
-                            ['pactl', 'get-default-sink'],
-                            capture_output=True,
-                            text=True
-                        )
-                        logger.info(f"Current default sink: {verify_result.stdout.strip()}")
-                        return True
-                    else:
-                        logger.error(f"❌ Failed to set default sink!")
-                        logger.error(f"Return code: {set_result.returncode}")
-                        logger.error(f"Stderr: {set_result.stderr}")
-                        logger.error(f"Stdout: {set_result.stdout}")
-                        return False
-
-                # Nếu chưa tìm thấy hoặc match score thấp, đợi một chút
-                elif not found_sink or best_match_score < 50:
-                    if retry < max_retries - 1:
-                        logger.info(f"No suitable Bluetooth sink found yet (best score: {best_match_score}). Waiting... ({retry+1}/{max_retries})")
-                        time.sleep(2)
-
-            logger.warning(f"Could not find PulseAudio sink for device {mac_address} after {max_retries} retries")
-            # Không set gì, giữ nguyên default hiện tại (HDMI)
-            return False
+                # Debug: Show all available sinks
+                all_sinks = subprocess.run(
+                    ['pactl', 'list', 'short', 'sinks'],
+                    capture_output=True,
+                    text=True
+                )
+                logger.debug(f"Available sinks:\n{all_sinks.stdout}")
+                return False
 
         except Exception as e:
-            logger.error(f"Error setting default sink: {e}")
-            # Không set gì, giữ nguyên default hiện tại (HDMI)
+            logger.error(f"Error setting Bluetooth sink: {e}")
             return False
 
     def set_default_to_audiocodec(self):
