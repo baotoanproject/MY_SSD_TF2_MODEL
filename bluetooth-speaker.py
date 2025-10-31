@@ -251,13 +251,21 @@ class BluetoothSpeakerService:
             )
             logger.debug(f"Available sinks:\n{all_sinks.stdout}")
 
-            # Sử dụng logic giống .desktop file
-            result = subprocess.run([
-                'sh', '-c',
-                'pactl list short sinks | grep -i hdmi | awk "{print $2}" | head -n 1'
-            ], capture_output=True, text=True)
+            # Tìm HDMI sink với nhiều method khác nhau
+            hdmi_methods = [
+                'pactl list short sinks | grep -i hdmi | awk "{print $2}" | head -n 1',
+                'pactl list short sinks | grep -E "(hdmi|HDMI)" | awk "{print $2}" | head -n 1',
+                'pactl list short sinks | grep -v bluez | grep -E "(alsa|audio)" | awk "{print $2}" | head -n 1'
+            ]
 
-            hdmi_sink = result.stdout.strip()
+            hdmi_sink = ""
+            for method in hdmi_methods:
+                result = subprocess.run(['sh', '-c', method], capture_output=True, text=True)
+                hdmi_sink = result.stdout.strip()
+                if hdmi_sink:
+                    logger.info(f"Found HDMI sink using method: {method}")
+                    break
+
             logger.info(f"Found HDMI sink: '{hdmi_sink}'")
 
             if hdmi_sink:
@@ -448,6 +456,93 @@ class BluetoothSpeakerService:
         except Exception as e:
             logger.warning(f"Could not test audio output: {e}")
 
+    def force_set_hdmi_fallback(self):
+        """Fallback method để force set HDMI khi method chính fail"""
+        try:
+            logger.info("🔧 Forcing HDMI audio output (fallback method)...")
+
+            # Method 1: Tìm tất cả non-bluetooth sinks
+            all_sinks = subprocess.run(
+                ['pactl', 'list', 'short', 'sinks'],
+                capture_output=True,
+                text=True
+            )
+            logger.info(f"All available sinks:\n{all_sinks.stdout}")
+
+            # Tìm sink không phải Bluetooth (ưu tiên HDMI)
+            non_bluetooth_sinks = []
+            for line in all_sinks.stdout.split('\n'):
+                if line.strip() and 'bluez' not in line.lower():
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        sink_name = parts[1]
+                        non_bluetooth_sinks.append(sink_name)
+                        logger.info(f"Found non-Bluetooth sink: {sink_name}")
+
+            # Ưu tiên HDMI, sau đó bất kỳ sink nào khác
+            target_sink = None
+            for sink in non_bluetooth_sinks:
+                if 'hdmi' in sink.lower():
+                    target_sink = sink
+                    logger.info(f"Found HDMI sink: {sink}")
+                    break
+
+            # Nếu không có HDMI, dùng sink đầu tiên
+            if not target_sink and non_bluetooth_sinks:
+                target_sink = non_bluetooth_sinks[0]
+                logger.info(f"Using first non-Bluetooth sink: {target_sink}")
+
+            if target_sink:
+                # Set as default
+                set_result = subprocess.run(
+                    ['pactl', 'set-default-sink', target_sink],
+                    capture_output=True,
+                    text=True
+                )
+
+                if set_result.returncode == 0:
+                    logger.info(f"✅ Successfully set {target_sink} as default sink (fallback)")
+
+                    # Move streams
+                    self.move_all_streams_to_sink(target_sink)
+
+                    # Verify
+                    verify_result = subprocess.run(
+                        ['pactl', 'get-default-sink'],
+                        capture_output=True,
+                        text=True
+                    )
+                    logger.info(f"Current default sink after fallback: {verify_result.stdout.strip()}")
+                    return True
+                else:
+                    logger.error(f"❌ Fallback failed: {set_result.stderr}")
+
+            # Method 2: Reset PulseAudio if all else fails
+            logger.warning("🔄 All methods failed, trying PulseAudio restart...")
+            restart_result = subprocess.run(
+                ['pulseaudio', '--kill'],
+                capture_output=True,
+                text=True
+            )
+            time.sleep(2)
+            start_result = subprocess.run(
+                ['pulseaudio', '--start'],
+                capture_output=True,
+                text=True
+            )
+
+            if start_result.returncode == 0:
+                logger.info("✅ PulseAudio restarted")
+                time.sleep(3)
+                # Try setting HDMI again after restart
+                return self.set_default_to_audiocodec()
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Error in fallback HDMI setting: {e}")
+            return False
+
     def scan_bluetooth_speakers(self, client_socket):
         """Scan và tìm loa Bluetooth"""
         try:
@@ -630,11 +725,25 @@ class BluetoothSpeakerService:
             )
 
             if result.returncode == 0:
+                logger.info(f"✅ Successfully disconnected from {mac_address}")
+
                 if mac_address in self.connected_speakers:
                     self.connected_speakers.remove(mac_address)
 
+                # Đợi một chút để PulseAudio cập nhật
+                time.sleep(2)
+
                 # ✅ Set default sink về HDMI sau khi disconnect Bluetooth
-                self.set_default_to_audiocodec()
+                logger.info("Setting audio back to HDMI after Bluetooth disconnect...")
+                hdmi_success = self.set_default_to_audiocodec()
+
+                if not hdmi_success:
+                    logger.warning("Primary HDMI method failed, trying fallback...")
+                    fallback_success = self.force_set_hdmi_fallback()
+                    if not fallback_success:
+                        logger.error("❌ All HDMI setting methods failed!")
+                else:
+                    logger.info("✅ Successfully set audio back to HDMI")
 
                 response = {
                     'action': 'disconnect_result',
