@@ -251,18 +251,17 @@ class BluetoothSpeakerService:
             )
             logger.debug(f"Available sinks:\n{all_sinks.stdout}")
 
-            # Tìm HDMI sink với nhiều method khác nhau
+            # CHỈ tìm HDMI sink - KHÔNG BAO GIỜ dùng audioCodec
             hdmi_methods = [
                 'pactl list short sinks | grep -i hdmi | awk "{print $2}" | head -n 1',
-                'pactl list short sinks | grep -E "(hdmi|HDMI)" | awk "{print $2}" | head -n 1',
-                'pactl list short sinks | grep -v bluez | grep -E "(alsa|audio)" | awk "{print $2}" | head -n 1'
+                'pactl list short sinks | grep -E "(hdmi|HDMI)" | awk "{print $2}" | head -n 1'
             ]
 
             hdmi_sink = ""
             for method in hdmi_methods:
                 result = subprocess.run(['sh', '-c', method], capture_output=True, text=True)
                 hdmi_sink = result.stdout.strip()
-                if hdmi_sink:
+                if hdmi_sink and 'hdmi' in hdmi_sink.lower():
                     logger.info(f"Found HDMI sink using method: {method}")
                     break
 
@@ -299,16 +298,7 @@ class BluetoothSpeakerService:
             else:
                 logger.error("❌ No HDMI sink found in system!")
                 logger.error(f"Available sinks:\n{all_sinks.stdout}")
-                # Fallback: Try to find any non-bluetooth sink
-                fallback_result = subprocess.run([
-                    'sh', '-c',
-                    'pactl list short sinks | grep -v bluez | awk "{print $2}" | head -n 1'
-                ], capture_output=True, text=True)
-                fallback_sink = fallback_result.stdout.strip()
-                if fallback_sink:
-                    logger.warning(f"⚠️ Using fallback sink: {fallback_sink}")
-                    subprocess.run(['pactl', 'set-default-sink', fallback_sink])
-                    return True
+                logger.error("⚠️ HDMI is required - NOT switching to any other sink")
                 return False
 
         except Exception as e:
@@ -469,28 +459,25 @@ class BluetoothSpeakerService:
             )
             logger.info(f"All available sinks:\n{all_sinks.stdout}")
 
-            # Tìm sink không phải Bluetooth (ưu tiên HDMI)
-            non_bluetooth_sinks = []
+            # CHỈ tìm HDMI sink - KHÔNG dùng sink khác
+            hdmi_sinks = []
             for line in all_sinks.stdout.split('\n'):
                 if line.strip() and 'bluez' not in line.lower():
                     parts = line.split()
                     if len(parts) >= 2:
                         sink_name = parts[1]
-                        non_bluetooth_sinks.append(sink_name)
-                        logger.info(f"Found non-Bluetooth sink: {sink_name}")
+                        if 'hdmi' in sink_name.lower():
+                            hdmi_sinks.append(sink_name)
+                            logger.info(f"Found HDMI sink: {sink_name}")
 
-            # Ưu tiên HDMI, sau đó bất kỳ sink nào khác
+            # CHỈ dùng HDMI sink
             target_sink = None
-            for sink in non_bluetooth_sinks:
-                if 'hdmi' in sink.lower():
-                    target_sink = sink
-                    logger.info(f"Found HDMI sink: {sink}")
-                    break
-
-            # Nếu không có HDMI, dùng sink đầu tiên
-            if not target_sink and non_bluetooth_sinks:
-                target_sink = non_bluetooth_sinks[0]
-                logger.info(f"Using first non-Bluetooth sink: {target_sink}")
+            if hdmi_sinks:
+                target_sink = hdmi_sinks[0]  # Dùng HDMI sink đầu tiên
+                logger.info(f"Using HDMI sink: {target_sink}")
+            else:
+                logger.error("❌ No HDMI sink found in fallback method!")
+                return False
 
             if target_sink:
                 # Set as default
