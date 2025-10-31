@@ -224,7 +224,23 @@ class BluetoothSpeakerService:
     def set_default_to_audiocodec(self):
         """Set default sink về HDMI (sử dụng logic giống .desktop file)"""
         try:
-            logger.info("Setting default audio sink to HDMI...")
+            logger.info("🎵 Attempting to set default audio sink to HDMI...")
+
+            # Check current default trước
+            current_default = subprocess.run(
+                ['pactl', 'get-default-sink'],
+                capture_output=True,
+                text=True
+            )
+            logger.info(f"Current default sink: {current_default.stdout.strip()}")
+
+            # List all sinks for debug
+            all_sinks = subprocess.run(
+                ['pactl', 'list', 'short', 'sinks'],
+                capture_output=True,
+                text=True
+            )
+            logger.debug(f"Available sinks:\n{all_sinks.stdout}")
 
             # Sử dụng logic giống .desktop file
             result = subprocess.run([
@@ -233,8 +249,14 @@ class BluetoothSpeakerService:
             ], capture_output=True, text=True)
 
             hdmi_sink = result.stdout.strip()
+            logger.info(f"Found HDMI sink: '{hdmi_sink}'")
 
             if hdmi_sink:
+                # Check nếu HDMI đã là default rồi
+                if hdmi_sink == current_default.stdout.strip():
+                    logger.info(f"✅ HDMI already set as default: {hdmi_sink}")
+                    return True
+
                 set_result = subprocess.run(
                     ['pactl', 'set-default-sink', hdmi_sink],
                     capture_output=True,
@@ -242,7 +264,7 @@ class BluetoothSpeakerService:
                 )
 
                 if set_result.returncode == 0:
-                    logger.info(f"✅ Set default audio sink to HDMI: {hdmi_sink}")
+                    logger.info(f"✅ Successfully changed default audio sink to HDMI: {hdmi_sink}")
                     self.move_all_streams_to_sink(hdmi_sink)
 
                     # Verify
@@ -251,13 +273,25 @@ class BluetoothSpeakerService:
                         capture_output=True,
                         text=True
                     )
-                    logger.info(f"Verified current default sink: {verify_result.stdout.strip()}")
+                    logger.info(f"Verified new default sink: {verify_result.stdout.strip()}")
                     return True
                 else:
                     logger.error(f"❌ Failed to set HDMI as default sink: {set_result.stderr}")
+                    logger.error(f"Command output: {set_result.stdout}")
                     return False
             else:
-                logger.error("❌ No HDMI sink found")
+                logger.error("❌ No HDMI sink found in system!")
+                logger.error(f"Available sinks:\n{all_sinks.stdout}")
+                # Fallback: Try to find any non-bluetooth sink
+                fallback_result = subprocess.run([
+                    'sh', '-c',
+                    'pactl list short sinks | grep -v bluez | awk "{print $2}" | head -n 1'
+                ], capture_output=True, text=True)
+                fallback_sink = fallback_result.stdout.strip()
+                if fallback_sink:
+                    logger.warning(f"⚠️ Using fallback sink: {fallback_sink}")
+                    subprocess.run(['pactl', 'set-default-sink', fallback_sink])
+                    return True
                 return False
 
         except Exception as e:
@@ -794,8 +828,14 @@ class BluetoothSpeakerService:
 
             # Nếu không reconnect được thiết bị audio nào, set về HDMI
             if not audio_devices_reconnected:
-                logger.info("No audio devices reconnected, setting default sink to HDMI...")
-                self.set_default_to_audiocodec()
+                logger.info("🔊 No audio devices reconnected, ensuring HDMI is set as default...")
+                result = self.set_default_to_audiocodec()
+                if result:
+                    logger.info("✅ HDMI audio output confirmed")
+                else:
+                    logger.error("❌ Failed to set HDMI as default audio output")
+            else:
+                logger.info(f"✅ Audio devices reconnected: {len(audio_devices_reconnected)}")
 
             logger.info(f"Auto-reconnect completed: {reconnected_count}/{len(attempted_devices)} devices reconnected")
             if audio_devices_reconnected:
