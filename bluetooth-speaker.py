@@ -131,15 +131,30 @@ class BluetoothSpeakerService:
                     bluetooth_sink = result.stdout.strip()
 
                 if bluetooth_sink:
-                    # Set as default - force with explicit profile
-                    subprocess.run(['pactl', 'set-card-profile', 'bluez_card.' + mac_address.replace(":", "_"), 'a2dp_sink'], capture_output=True)
+                    # Wait for card to be ready
+                    time.sleep(2)
 
-                    set_result = subprocess.run(['pactl', 'set-default-sink', bluetooth_sink])
+                    # Try to get and set card profile
+                    card_name = 'bluez_card.' + mac_address.replace(":", "_")
 
-                    if set_result.returncode == 0:
-                        logger.info(f"✅ Set Bluetooth sink: {bluetooth_sink}")
-                        self.move_all_streams_to_sink(bluetooth_sink)
-                        return True
+                    # Set A2DP profile
+                    subprocess.run(['pactl', 'set-card-profile', card_name, 'a2dp_sink'], capture_output=True)
+                    time.sleep(1)
+
+                    # Reload and check sink again
+                    result = subprocess.run([
+                        'sh', '-c',
+                        'pactl list short sinks | grep -i bluez | awk "{print $2}" | head -n 1'
+                    ], capture_output=True, text=True)
+                    bluetooth_sink = result.stdout.strip()
+
+                    if bluetooth_sink:
+                        set_result = subprocess.run(['pactl', 'set-default-sink', bluetooth_sink], capture_output=True)
+
+                        if set_result.returncode == 0:
+                            logger.info(f"✅ Set Bluetooth sink: {bluetooth_sink}")
+                            self.move_all_streams_to_sink(bluetooth_sink)
+                            return True
 
                 time.sleep(2)
 
