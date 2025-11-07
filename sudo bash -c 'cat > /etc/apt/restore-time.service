@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore system clock at boot
+DefaultDependencies=no
+Before=basic.target sysinit.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/restore-time.sh
+
+[Install]
+WantedBy=sysinit.target
